@@ -6,12 +6,20 @@ import MusicPlayerKit
 /// jerky on macOS) and only snaps to the nearest whole number once the drag
 /// ends, so the motion itself still feels smooth.
 ///
-/// Only ever shown for the selected (blue-highlighted) row — see
-/// `RatingCellView` — so its label is always rendered in white for contrast
-/// against the selection background rather than the normal secondary/accent
-/// colors used elsewhere.
+/// Defaults to white text for its original use — the selected
+/// (blue-highlighted) row in the track table (see `RatingCellView`) — but
+/// takes a style so it also reads correctly on a plain background, e.g. the
+/// mini-player.
 struct RatingSliderView: View {
     @Binding var rating: Int
+    var style: Style = .onSelectionHighlight
+
+    enum Style {
+        /// White text, for use over the table row's blue selection color.
+        case onSelectionHighlight
+        /// Secondary/accent text, for use on an ordinary background.
+        case plain
+    }
 
     @State private var isDragging = false
     @State private var liveValue: Double = 0
@@ -42,9 +50,18 @@ struct RatingSliderView: View {
             Text(displayValue == 0 ? "–" : "\(displayValue)")
                 .font(.system(size: 11, weight: .medium, design: .rounded))
                 .monospacedDigit()
-                .foregroundStyle(displayValue == 0 ? Color.white.opacity(0.6) : Color.white)
+                .foregroundStyle(textColor)
                 .frame(minWidth: 18, alignment: .leading)
                 .fixedSize()
+        }
+    }
+
+    private var textColor: Color {
+        switch style {
+        case .onSelectionHighlight:
+            return displayValue == 0 ? Color.white.opacity(0.6) : Color.white
+        case .plain:
+            return displayValue == 0 ? Color.secondary : Color.accentColor
         }
     }
 

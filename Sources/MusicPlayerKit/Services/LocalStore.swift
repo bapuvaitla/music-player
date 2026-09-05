@@ -130,6 +130,28 @@ public protocol RatingStore: Sendable {
     /// itself is never touched.
     func excludedPaths() async throws -> Set<String>
     func excludePath(_ path: String) async throws
+
+    /// Learn Song: which tab/vocal-melody file (if any) is attached to a
+    /// track, and its saved loop region — keyed by track path. Stores
+    /// *references* to the imported files, same as how the library
+    /// references audio files by path rather than copying them.
+    func learnSession(forTrackPath path: String) async throws -> LearnSessionData?
+    func saveLearnSession(_ data: LearnSessionData, forTrackPath path: String) async throws
+}
+
+/// Learn Song's saved state for one track — see `RatingStore.learnSession`.
+public struct LearnSessionData: Sendable {
+    public var tabFilePath: String?
+    public var vocalFilePath: String?
+    public var loopStart: TimeInterval?
+    public var loopEnd: TimeInterval?
+
+    public init(tabFilePath: String? = nil, vocalFilePath: String? = nil, loopStart: TimeInterval? = nil, loopEnd: TimeInterval? = nil) {
+        self.tabFilePath = tabFilePath
+        self.vocalFilePath = vocalFilePath
+        self.loopStart = loopStart
+        self.loopEnd = loopEnd
+    }
 }
 
 /// A manually-entered track with no backing audio file — see
@@ -263,6 +285,40 @@ private struct ArtworkOverrideRecord: Codable, FetchableRecord, PersistableRecor
 private struct ExcludedPathRecord: Codable, FetchableRecord, PersistableRecord {
     static let databaseTableName = "excluded_paths"
     var path: String
+}
+
+private struct LearnSessionRecord: Codable, FetchableRecord, PersistableRecord {
+    static let databaseTableName = "learn_sessions"
+
+    var trackPath: String
+    var tabFilePath: String?
+    var vocalFilePath: String?
+    var loopStart: Double?
+    var loopEnd: Double?
+
+    enum CodingKeys: String, CodingKey {
+        case trackPath = "track_path"
+        case tabFilePath = "tab_file_path"
+        case vocalFilePath = "vocal_file_path"
+        case loopStart = "loop_start"
+        case loopEnd = "loop_end"
+    }
+
+    var asData: LearnSessionData {
+        LearnSessionData(tabFilePath: tabFilePath, vocalFilePath: vocalFilePath, loopStart: loopStart, loopEnd: loopEnd)
+    }
+
+    init(trackPath: String, tabFilePath: String?, vocalFilePath: String?, loopStart: Double?, loopEnd: Double?) {
+        self.trackPath = trackPath
+        self.tabFilePath = tabFilePath
+        self.vocalFilePath = vocalFilePath
+        self.loopStart = loopStart
+        self.loopEnd = loopEnd
+    }
+
+    init(trackPath: String, _ data: LearnSessionData) {
+        self.init(trackPath: trackPath, tabFilePath: data.tabFilePath, vocalFilePath: data.vocalFilePath, loopStart: data.loopStart, loopEnd: data.loopEnd)
+    }
 }
 
 private struct PlaceholderTrackRecord: Codable, FetchableRecord, PersistableRecord {
@@ -466,6 +522,15 @@ public final class GRDBLocalStore: RatingStore, PlaylistStore, @unchecked Sendab
                 t.column("path", .text).notNull().primaryKey()
             }
         }
+        migrator.registerMigration("createLearnSessions") { db in
+            try db.create(table: "learn_sessions") { t in
+                t.column("track_path", .text).notNull().primaryKey()
+                t.column("tab_file_path", .text)
+                t.column("vocal_file_path", .text)
+                t.column("loop_start", .double)
+                t.column("loop_end", .double)
+            }
+        }
         return migrator
     }
 
@@ -602,6 +667,18 @@ public final class GRDBLocalStore: RatingStore, PlaylistStore, @unchecked Sendab
         }
     }
 
+    public func learnSession(forTrackPath path: String) async throws -> LearnSessionData? {
+        try await dbQueue.read { db in
+            try LearnSessionRecord.fetchOne(db, key: path)?.asData
+        }
+    }
+
+    public func saveLearnSession(_ data: LearnSessionData, forTrackPath path: String) async throws {
+        try await dbQueue.write { db in
+            try LearnSessionRecord(trackPath: path, data).save(db)
+        }
+    }
+
     // MARK: - PlaylistStore
 
     public func allPlaylists() async throws -> [Playlist] {
@@ -648,6 +725,7 @@ public actor InMemoryLocalStore: RatingStore, PlaylistStore {
     private var artworkOverrides: [String: Data] = [:]
     private var placeholderTracks: [String: PlaceholderTrackData] = [:]
     private var excludedPathsStorage: Set<String> = []
+    private var learnSessions: [String: LearnSessionData] = [:]
 
     public init() {}
 
@@ -726,6 +804,14 @@ public actor InMemoryLocalStore: RatingStore, PlaylistStore {
 
     public func excludePath(_ path: String) async throws {
         excludedPathsStorage.insert(path)
+    }
+
+    public func learnSession(forTrackPath path: String) async throws -> LearnSessionData? {
+        learnSessions[path]
+    }
+
+    public func saveLearnSession(_ data: LearnSessionData, forTrackPath path: String) async throws {
+        learnSessions[path] = data
     }
 
     public func allPlaylists() async throws -> [Playlist] {

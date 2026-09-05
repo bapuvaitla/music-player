@@ -50,16 +50,35 @@ public final class LibraryModel: ObservableObject {
     @Published public private(set) var tracks: [Track] = []
     @Published public private(set) var playlists: [Playlist] = []
 
-    @Published public var selectedArtists: Set<String> = []
-    @Published public var selectedAlbums: Set<String> = []
-    @Published public var selectedGenres: Set<String> = []
-    @Published public var showUnratedOnly: Bool = false
-    @Published public var selectedPlaylistID: UUID?
+    // What's currently "on screen" — restored on launch so reopening the
+    // app comes back to the same browsing context instead of always
+    // starting at the unfiltered library.
+    @Published public var selectedArtists: Set<String> {
+        didSet { persistBrowsingState() }
+    }
+    @Published public var selectedAlbums: Set<String> {
+        didSet { persistBrowsingState() }
+    }
+    @Published public var selectedGenres: Set<String> {
+        didSet { persistBrowsingState() }
+    }
+    @Published public var showUnratedOnly: Bool {
+        didSet { persistBrowsingState() }
+    }
+    @Published public var selectedPlaylistID: UUID? {
+        didSet { persistBrowsingState() }
+    }
     /// Mirrors the track table's row selection (owned as real `@State` in
     /// TrackListView, which mirrors it here) so other views — like the
     /// sidebar's artwork panel — can react to "a track got selected"
     /// without needing selection to live centrally in the first place.
     @Published public var selectedTrackIDs: Set<String> = []
+
+    /// Non-nil while the "Learn Song" view is open for a track — set from
+    /// the track list's right-click menu, read by `ContentView` to decide
+    /// whether to show that view over the normal library, and cleared by
+    /// its own "Done" button.
+    @Published public var learningTrack: Track?
 
     @Published public var isScanning: Bool = false
     @Published public var scanProgress: (completed: Int, total: Int)?
@@ -82,11 +101,28 @@ public final class LibraryModel: ObservableObject {
     /// multiple "Add Folder" picks instead of a new pick replacing the last.
     @Published public private(set) var scannedFolderPaths: [String] = []
 
+    /// Albums manually flagged "incomplete" — the user doesn't own every
+    /// track, hasn't heard the rest, and doesn't want the average shown as
+    /// if it reflected the whole album. Purely a user-declared flag, not
+    /// derived: distinct from `partiallyRatedAlbums`, which is computed
+    /// from whether every *owned* track has a rating.
+    @Published public var incompleteRatingAlbums: Set<String> {
+        didSet {
+            UserDefaults.standard.set(Array(incompleteRatingAlbums), forKey: Self.incompleteRatingAlbumsKey)
+        }
+    }
+
     private let ratingStore: RatingStore
     private let playlistStore: PlaylistStore
     private static let visibleColumnsKey = "visibleTrackColumns"
     private static let columnOrderKey = "trackColumnOrder"
     private static let scannedFoldersKey = "scannedFolderPaths"
+    private static let selectedArtistsKey = "selectedArtists"
+    private static let selectedAlbumsKey = "selectedAlbums"
+    private static let selectedGenresKey = "selectedGenres"
+    private static let showUnratedOnlyKey = "showUnratedOnly"
+    private static let selectedPlaylistIDKey = "selectedPlaylistID"
+    private static let incompleteRatingAlbumsKey = "incompleteRatingAlbums"
 
     public init(ratingStore: RatingStore, playlistStore: PlaylistStore) {
         self.ratingStore = ratingStore
@@ -94,7 +130,34 @@ public final class LibraryModel: ObservableObject {
         self.visibleColumns = Self.loadVisibleColumns()
         self.columnOrder = Self.loadColumnOrder()
         self.scannedFolderPaths = Self.loadScannedFolderPaths()
+        self.selectedArtists = Set(UserDefaults.standard.stringArray(forKey: Self.selectedArtistsKey) ?? [])
+        self.selectedAlbums = Set(UserDefaults.standard.stringArray(forKey: Self.selectedAlbumsKey) ?? [])
+        self.selectedGenres = Set(UserDefaults.standard.stringArray(forKey: Self.selectedGenresKey) ?? [])
+        self.showUnratedOnly = UserDefaults.standard.bool(forKey: Self.showUnratedOnlyKey)
+        self.selectedPlaylistID = UserDefaults.standard.string(forKey: Self.selectedPlaylistIDKey).flatMap(UUID.init(uuidString:))
+        self.incompleteRatingAlbums = Set(UserDefaults.standard.stringArray(forKey: Self.incompleteRatingAlbumsKey) ?? [])
         Task { await ArtworkLoader.shared.configure(store: ratingStore) }
+    }
+
+    public func toggleIncompleteRating(forAlbum album: String) {
+        if incompleteRatingAlbums.contains(album) {
+            incompleteRatingAlbums.remove(album)
+        } else {
+            incompleteRatingAlbums.insert(album)
+        }
+    }
+
+    /// Every property here is `didSet`-driven back to this one call, since
+    /// several of them commonly change together (e.g. `resetAllFilters`) —
+    /// a little redundant on the rare multi-property update, but simpler
+    /// than routing each property to its own write.
+    private func persistBrowsingState() {
+        let defaults = UserDefaults.standard
+        defaults.set(Array(selectedArtists), forKey: Self.selectedArtistsKey)
+        defaults.set(Array(selectedAlbums), forKey: Self.selectedAlbumsKey)
+        defaults.set(Array(selectedGenres), forKey: Self.selectedGenresKey)
+        defaults.set(showUnratedOnly, forKey: Self.showUnratedOnlyKey)
+        defaults.set(selectedPlaylistID?.uuidString, forKey: Self.selectedPlaylistIDKey)
     }
 
     // MARK: - Faceted browsing
@@ -133,6 +196,16 @@ public final class LibraryModel: ObservableObject {
 
     public var artistTrackCounts: [String: Int] {
         Dictionary(grouping: tracksMatchingFacets(excluding: .artist), by: \.artist).mapValues(\.count)
+    }
+
+    public var genreTrackCounts: [String: Int] {
+        Dictionary(grouping: tracksMatchingFacets(excluding: .genre), by: \.genre).mapValues(\.count)
+    }
+
+    /// How many tracks are currently unrated — shown next to the "Unrated"
+    /// row itself, so it doesn't need to actually be selected to know.
+    public var unratedTrackCount: Int {
+        visibleTracks.filter { $0.rating == 0 }.count
     }
 
     /// Mean rating per album across the whole library (not affected by the
@@ -304,6 +377,13 @@ public final class LibraryModel: ObservableObject {
 
     // MARK: - Placeholder tracks
 
+    /// In-flight persistence Task per placeholder path, so a rapid
+    /// sequence of edits to the same placeholder (e.g. `updateMetadata`
+    /// immediately followed by `setRating`) writes to the database in the
+    /// order the edits were made, not the order their unstructured Tasks
+    /// happen to get scheduled. See `persistPlaceholder`.
+    private var pendingPlaceholderWrites: [String: Task<Void, Never>] = [:]
+
     /// Loads every manually-entered placeholder track (see
     /// `Track.isPlaceholder`) and merges them in alongside whatever's been
     /// scanned from files — call once at launch, same as
@@ -369,7 +449,9 @@ public final class LibraryModel: ObservableObject {
         guard track.isPlaceholder else { return }
         tracks.removeAll { $0.path == track.path }
         let path = track.path
-        Task {
+        let previous = pendingPlaceholderWrites[path]
+        pendingPlaceholderWrites[path] = Task {
+            _ = await previous?.value
             try? await ratingStore.deletePlaceholderTrack(path: path)
         }
     }
@@ -391,6 +473,19 @@ public final class LibraryModel: ObservableObject {
         let path = track.path
         Task {
             try? await ratingStore.excludePath(path)
+        }
+    }
+
+    // MARK: - Learn Song
+
+    public func loadLearnSession(for track: Track) async -> LearnSessionData? {
+        try? await ratingStore.learnSession(forTrackPath: track.path)
+    }
+
+    public func saveLearnSession(_ data: LearnSessionData, for track: Track) {
+        let path = track.path
+        Task {
+            try? await ratingStore.saveLearnSession(data, forTrackPath: path)
         }
     }
 
@@ -521,6 +616,14 @@ public final class LibraryModel: ObservableObject {
     /// Placeholder tracks (see `Track.isPlaceholder`) have no scanned file
     /// to layer an override on top of — everything about one lives in this
     /// single row, so any edit just re-saves the whole current snapshot.
+    ///
+    /// Chained onto `pendingPlaceholderWrites` (keyed by path) rather than
+    /// fired as an independent `Task`: two edits in quick succession (e.g.
+    /// `updateMetadata` immediately followed by `setRating`) each snapshot
+    /// `track` synchronously, but their unstructured Tasks have no
+    /// guaranteed order of *execution* — without chaining, the earlier
+    /// edit's write could reach the database after the later one's and
+    /// silently clobber it with stale data.
     private func persistPlaceholder(_ track: Track) {
         let data = PlaceholderTrackData(
             path: track.path,
@@ -538,7 +641,10 @@ public final class LibraryModel: ObservableObject {
             tags: track.tags,
             isHidden: track.isHidden
         )
-        Task {
+        let path = track.path
+        let previous = pendingPlaceholderWrites[path]
+        pendingPlaceholderWrites[path] = Task {
+            _ = await previous?.value
             try? await ratingStore.savePlaceholderTrack(data)
         }
     }
@@ -548,13 +654,21 @@ public final class LibraryModel: ObservableObject {
     /// rewinding to replay a passage within one sitting can genuinely add
     /// up to more than the track's own duration.
     public func recordPartialPlay(_ fraction: Double, for track: Track) {
+        Task {
+            await recordPartialPlayAndWait(fraction, for: track)
+        }
+    }
+
+    /// Same as `recordPartialPlay`, but awaits the underlying store write
+    /// completing instead of firing an unstructured `Task` — used at app
+    /// termination, where the process can exit before a fire-and-forget
+    /// write reaches disk.
+    public func recordPartialPlayAndWait(_ fraction: Double, for track: Track) async {
         let clamped = max(0, fraction)
         guard clamped > 0 else { return }
         guard let index = tracks.firstIndex(where: { $0.path == track.path }) else { return }
         tracks[index].playCount += clamped
-        Task {
-            try? await ratingStore.addPartialPlay(clamped, forPath: track.path)
-        }
+        try? await ratingStore.addPartialPlay(clamped, forPath: track.path)
     }
 
     /// Saves local overrides for every field the "Edit Info" sheet exposes

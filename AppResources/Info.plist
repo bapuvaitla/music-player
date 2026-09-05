@@ -26,5 +26,7 @@
     <string>public.app-category.music</string>
     <key>NSHumanReadableCopyright</key>
     <string>Local build.</string>
+    <key>NSMicrophoneUsageDescription</key>
+    <string>Used by the Learn Song feature to listen to your playing/singing and check it against the imported tab or melody.</string>
 </dict>
 </plist>

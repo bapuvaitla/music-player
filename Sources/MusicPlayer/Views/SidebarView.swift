@@ -8,36 +8,49 @@ struct SidebarView: View {
     @State private var showingNewSmartPlaylistSheet = false
     @State private var editingSmartPlaylist: Playlist?
     @State private var renamingPlaylist: Playlist?
+    @AppStorage("sidebarExpanded_Playlists") private var isPlaylistsExpanded = false
+    /// Same List/DisclosureGroup font-inheritance issue `SidebarFacetSection`
+    /// works around — applied here too so playlist rows/Unrated match.
+    @AppStorage("appFontPostscriptName") private var appFontPostscriptName: String = ""
+    @AppStorage("appFontSize") private var appFontSize: Double = 13
+
+    private var bodyFont: Font {
+        appFontPostscriptName.isEmpty ? .system(size: appFontSize) : .custom(appFontPostscriptName, size: appFontSize)
+    }
 
     var body: some View {
         VStack(spacing: 0) {
             List {
+                // One shared Section for all five — List adds visible
+                // breathing room *between* sections regardless of content,
+                // which read as "random" gaps between collapsed rows that
+                // should sit exactly as tight as any other row.
                 Section {
-                    quickFilterRow(title: "All Tracks", systemImage: "music.note.list", isActive: isAllTracksActive) {
+                    // Clicking this already clears every filter, so a
+                    // separate "Clear All" affordance elsewhere is
+                    // redundant now — this row does that job on its own.
+                    Button {
                         library.resetAllFilters()
-                    }
-                    quickFilterRow(title: "Unrated", systemImage: "star.slash", isActive: library.showUnratedOnly) {
-                        library.toggleUnratedOnly()
-                    }
-                } header: {
-                    if !isAllTracksActive {
-                        HStack {
-                            Text("Library")
+                    } label: {
+                        HStack(spacing: 6) {
+                            SidebarHeadingText("All Tracks")
+                                .foregroundStyle(Color.appAccent)
                             Spacer()
-                            Button("Clear All") {
-                                library.resetAllFilters()
-                            }
-                            .buttonStyle(.link)
-                            .font(.caption2)
+                            Text("\(library.visibleTracks.count)")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
                         }
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 4)
+                        .background(isAllTracksActive ? Color.appAccent.opacity(0.18) : Color.clear)
+                        .clipShape(RoundedRectangle(cornerRadius: 4, style: .continuous))
+                        .contentShape(Rectangle())
                     }
-                }
+                    .buttonStyle(.plain)
 
-                if !library.artists.isEmpty {
-                    Section {
+                    if !library.artists.isEmpty {
                         SidebarFacetSection(
                             title: "Artists",
-                            systemImage: "music.mic",
                             items: library.artists,
                             counts: library.artistTrackCounts,
                             selected: library.selectedArtists,
@@ -45,13 +58,10 @@ struct SidebarView: View {
                             onClear: { library.selectedArtists.removeAll() }
                         )
                     }
-                }
 
-                if !library.albums.isEmpty {
-                    Section {
+                    if !library.albums.isEmpty {
                         SidebarFacetSection(
                             title: "Albums",
-                            systemImage: "opticaldisc",
                             items: library.albums,
                             counts: [:],
                             ratings: library.albumAverageRatings,
@@ -59,48 +69,66 @@ struct SidebarView: View {
                             selected: library.selectedAlbums,
                             onSelectionChange: library.setAlbums,
                             onClear: { library.selectedAlbums.removeAll() },
-                            onShowAllTracks: { library.unhideAllTracks(inAlbum: $0) }
+                            onShowAllTracks: { library.unhideAllTracks(inAlbum: $0) },
+                            incompleteRatingItems: library.incompleteRatingAlbums,
+                            onToggleIncompleteRating: { library.toggleIncompleteRating(forAlbum: $0) }
                         )
                     }
-                }
 
-                if !library.genres.isEmpty {
-                    Section {
+                    if !library.genres.isEmpty {
                         SidebarFacetSection(
                             title: "Genres",
-                            systemImage: "guitars",
                             items: library.genres,
-                            counts: [:],
+                            counts: library.genreTrackCounts,
                             selected: library.selectedGenres,
                             onSelectionChange: library.setGenres,
                             onClear: { library.selectedGenres.removeAll() }
                         )
                     }
-                }
-
-                Section {
-                    ForEach(library.playlists) { playlist in
-                        playlistRow(playlist)
-                    }
-                    Menu {
-                        Button("New Playlist…") { showingNewPlaylistSheet = true }
-                        Button("New Smart Playlist…") { showingNewSmartPlaylistSheet = true }
+                    // Collapsible, same as Artists/Albums/Genres above, and
+                    // in the same shared Section — no gap before it either.
+                    DisclosureGroup(isExpanded: $isPlaylistsExpanded) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            ForEach(library.playlists) { playlist in
+                                playlistRow(playlist)
+                            }
+                            // Unrated lives here, not in its own section —
+                            // it's really just another named subset of the
+                            // library, the same way a playlist is.
+                            quickFilterRow(title: "Unrated", isActive: library.showUnratedOnly, count: library.unratedTrackCount) {
+                                library.toggleUnratedOnly()
+                            }
+                            Menu {
+                                Button("New Playlist…") { showingNewPlaylistSheet = true }
+                                Button("New Smart Playlist…") { showingNewSmartPlaylistSheet = true }
+                            } label: {
+                                Text("Add Playlist")
+                                    .font(.system(size: 13))
+                                    .foregroundStyle(.secondary.opacity(0.6))
+                            }
+                            .menuStyle(.borderlessButton)
+                            .fixedSize()
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 4)
+                        }
                     } label: {
-                        Label("Add Playlist", systemImage: "plus.circle")
-                            .font(.system(size: 12))
-                            .foregroundStyle(.secondary)
+                        SidebarHeadingText("Playlists")
                     }
-                    .menuStyle(.borderlessButton)
-                    .fixedSize()
-                } header: {
-                    Text("Playlists")
+                    .disclosureGroupStyle(RightChevronDisclosureGroupStyle())
                 }
             }
             .listStyle(.sidebar)
+            .scrollContentBackground(.hidden)
 
             SidebarNowPlayingArt()
         }
-        .navigationSplitViewColumnWidth(min: 210, ideal: 230, max: 340)
+        // `.ignoresSafeArea()` on the color, not the whole VStack — full
+        // screen mode changes how much of the window's top the system
+        // reserves (the menu-bar reveal zone), and without this the
+        // sidebar's background didn't extend into that area, leaving a
+        // plain white strip above the actual content there.
+        .background(Color.sidebarBackground.ignoresSafeArea())
+        .navigationSplitViewColumnWidth(min: 210, ideal: 230, max: 600)
         .sheet(isPresented: $showingNewPlaylistSheet) {
             NewPlaylistSheet()
         }
@@ -123,14 +151,21 @@ struct SidebarView: View {
             && library.selectedPlaylistID == nil
     }
 
-    private func quickFilterRow(title: String, systemImage: String, isActive: Bool, action: @escaping () -> Void) -> some View {
+    private func quickFilterRow(title: String, isActive: Bool, count: Int? = nil, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             HStack {
-                Label(title, systemImage: systemImage)
+                Text(title)
+                    .font(bodyFont)
+                    .foregroundStyle(isActive ? Color.primary : Color.secondary)
                 Spacer()
+                if let count {
+                    Text("\(count)")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
             }
             .padding(.horizontal, 6)
-            .padding(.vertical, 3)
+            .padding(.vertical, 4)
             .background(isActive ? Color.accentColor.opacity(0.18) : Color.clear)
             .clipShape(RoundedRectangle(cornerRadius: 4, style: .continuous))
             .contentShape(Rectangle())
@@ -177,22 +212,27 @@ private struct PlaylistRow: View {
     let onDelete: () -> Void
 
     @State private var isDropTargeted = false
+    @AppStorage("appFontPostscriptName") private var appFontPostscriptName: String = ""
+    @AppStorage("appFontSize") private var appFontSize: Double = 13
+
+    private var bodyFont: Font {
+        appFontPostscriptName.isEmpty ? .system(size: appFontSize) : .custom(appFontPostscriptName, size: appFontSize)
+    }
 
     var body: some View {
         Button(action: onSelect) {
             HStack {
-                Image(systemName: playlist.isSmart ? "gearshape.2" : "music.note.list")
-                    .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
                 Text(playlist.name)
+                    .font(bodyFont)
                     .lineLimit(1)
+                    .foregroundStyle(isSelected ? Color.primary : Color.secondary)
                 Spacer()
                 Text("\(trackCount)")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             }
             .padding(.horizontal, 6)
-            .padding(.vertical, 3)
+            .padding(.vertical, 4)
             .background(rowBackground)
             .clipShape(RoundedRectangle(cornerRadius: 4, style: .continuous))
             .contentShape(Rectangle())

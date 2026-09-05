@@ -184,7 +184,13 @@ struct TrackListView: View {
         // set/order changes from state alone.
         .id(library.orderedVisibleColumns)
         .background(TableScrollController(rowIndex: locateRowIndex, trigger: locateTrigger))
-        .tableStyle(.inset(alternatesRowBackgrounds: true))
+        .tableStyle(.inset(alternatesRowBackgrounds: false))
+        // Selection highlight in the app's own green rather than whatever
+        // the system accent color happens to be set to.
+        .tint(Color.appAccent)
+        // Taller rows, to match the wider column padding — the default
+        // was cramped.
+        .environment(\.defaultMinListRowHeight, 28)
         .contextMenu(forSelectionType: Track.ID.self) { ids in
             let selectedTracks = sortedTracks.filter { ids.contains($0.id) }
             if !selectedTracks.isEmpty {
@@ -270,22 +276,13 @@ struct TrackListView: View {
                     requestDelete(selectedTracks)
                 }
 
-                Divider()
-                // Table headers don't support a right-click menu on macOS
-                // (no public SwiftUI API for it), so this submenu doubles
-                // as the right-click path to the same column toggles the
-                // toolbar's Columns popover offers.
-                Menu("Columns") {
-                    ForEach(TrackColumn.allCases.filter { !$0.isAlwaysVisible }) { column in
-                        Button {
-                            library.toggleColumn(column)
-                        } label: {
-                            if library.visibleColumns.contains(column) {
-                                Label(column.title, systemImage: "checkmark")
-                            } else {
-                                Text(column.title)
-                            }
-                        }
+                // Columns is table-wide configuration, not something
+                // about a single selected track — showing it only for a
+                // multi-row selection (which already reads as "acting on
+                if selectedTracks.count == 1, let track = selectedTracks.first, !track.isPlaceholder {
+                    Divider()
+                    Button("Learn Song…") {
+                        library.learningTrack = track
                     }
                 }
             }
@@ -315,6 +312,15 @@ struct TrackListView: View {
             editingSelection = EditingSelection(tracks: selectedTracks, navigationContext: sortedTracks)
         }
         .onReceive(NotificationCenter.default.publisher(for: .requestLocatePlayingTrack)) { _ in
+            // Cmd+L is dual-purpose: with a track highlighted, it opens
+            // Learn Song for it (the more common thing to want mid-browse);
+            // with nothing selected, it falls back to its original job of
+            // jumping the list to whatever's currently playing.
+            if selection.count == 1, let id = selection.first,
+               let track = sortedTracks.first(where: { $0.id == id }), !track.isPlaceholder {
+                library.learningTrack = track
+                return
+            }
             guard let currentID = player.currentTrack?.id,
                   let index = sortedTracks.firstIndex(where: { $0.id == currentID }) else { return }
             selection = [currentID]
@@ -405,7 +411,7 @@ struct TrackListView: View {
     private func rowTextColor(_ track: Track) -> Color {
         if selection.contains(track.id) { return .white }
         if track.isPlaceholder { return .secondary }
-        return track.id == player.currentTrack?.id ? Color.accentColor : Color.primary
+        return track.id == player.currentTrack?.id ? Color.appAccent : Color.primary
     }
 
     private func copyArtwork(for track: Track) {
@@ -432,68 +438,81 @@ struct TrackListView: View {
                     .lineLimit(1)
                     .contentShape(Rectangle())
                     .modifier(ReorderModifier(track: track, playlist: activePlaylist, library: library, isDragArmed: dragArmedIDs.contains(track.id)))
+                .padding(.horizontal, 10)
             }
             .width(min: 160, ideal: 260)
         } else if library.orderedVisibleColumns.indices.contains(0), library.orderedVisibleColumns[0] == .artist {
             TableColumn("Artist", value: \.artist) { track in
                 Text(track.artist).foregroundStyle(rowTextColor(track)).lineLimit(1)
+                .padding(.horizontal, 10)
             }
             .width(min: 100, ideal: 160)
         } else if library.orderedVisibleColumns.indices.contains(0), library.orderedVisibleColumns[0] == .album {
             TableColumn("Album", value: \.album) { track in
                 Text(track.album).foregroundStyle(rowTextColor(track)).lineLimit(1)
+                .padding(.horizontal, 10)
             }
             .width(min: 100, ideal: 180)
         } else if library.orderedVisibleColumns.indices.contains(0), library.orderedVisibleColumns[0] == .genre {
             TableColumn("Genre", value: \.genre) { track in
                 Text(track.genre).foregroundStyle(rowTextColor(track)).lineLimit(1)
+                .padding(.horizontal, 10)
             }
             .width(min: 70, ideal: 100)
         } else if library.orderedVisibleColumns.indices.contains(0), library.orderedVisibleColumns[0] == .year {
             TableColumn("Year", value: \.yearSortKey) { track in
                 Text(track.year.map(String.init) ?? "").foregroundStyle(rowTextColor(track))
+                .padding(.horizontal, 10)
             }
-            .width(46)
+            .width(min: 50, ideal: 60, max: 90)
         } else if library.orderedVisibleColumns.indices.contains(0), library.orderedVisibleColumns[0] == .trackNumber {
             TableColumn("Track #", value: \.trackNumberSortKey) { track in
                 Text(track.trackNumber.map(String.init) ?? "").foregroundStyle(rowTextColor(track))
+                .padding(.horizontal, 10)
             }
-            .width(50)
+            .width(min: 40, ideal: 50, max: 90)
         } else if library.orderedVisibleColumns.indices.contains(0), library.orderedVisibleColumns[0] == .discNumber {
             TableColumn("Disc #", value: \.discNumberSortKey) { track in
                 Text(track.discNumber.map(String.init) ?? "").foregroundStyle(rowTextColor(track))
+                .padding(.horizontal, 10)
             }
-            .width(50)
+            .width(min: 40, ideal: 50, max: 90)
         } else if library.orderedVisibleColumns.indices.contains(0), library.orderedVisibleColumns[0] == .bpm {
             TableColumn("BPM", value: \.bpmSortKey) { track in
                 Text(track.bpm.map(String.init) ?? "").foregroundStyle(rowTextColor(track))
+                .padding(.horizontal, 10)
             }
-            .width(46)
+            .width(min: 40, ideal: 46, max: 80)
         } else if library.orderedVisibleColumns.indices.contains(0), library.orderedVisibleColumns[0] == .key {
             TableColumn("Key", value: \.keySortKey) { track in
                 Text(track.key ?? "").foregroundStyle(rowTextColor(track))
+                .padding(.horizontal, 10)
             }
-            .width(46)
+            .width(min: 40, ideal: 46, max: 80)
         } else if library.orderedVisibleColumns.indices.contains(0), library.orderedVisibleColumns[0] == .comments {
             TableColumn("Comments", value: \.commentsSortKey) { track in
                 Text(track.comments ?? "").foregroundStyle(rowTextColor(track)).lineLimit(1)
+                .padding(.horizontal, 10)
             }
             .width(min: 100, ideal: 160)
         } else if library.orderedVisibleColumns.indices.contains(0), library.orderedVisibleColumns[0] == .plays {
             TableColumn("Plays", value: \.playCount) { track in
                 Text(track.playCount > 0 ? String(format: "%.1f", track.playCount) : "–").foregroundStyle(rowTextColor(track)).monospacedDigit()
+                .padding(.horizontal, 10)
             }
-            .width(46)
+            .width(min: 40, ideal: 46, max: 80)
         } else if library.orderedVisibleColumns.indices.contains(0), library.orderedVisibleColumns[0] == .tags {
             TableColumn("Tags", value: \.tagsSortKey) { track in
                 Text(track.tags.joined(separator: ", ")).foregroundStyle(rowTextColor(track)).lineLimit(1)
+                .padding(.horizontal, 10)
             }
             .width(min: 80, ideal: 140)
         } else if library.orderedVisibleColumns.indices.contains(0), library.orderedVisibleColumns[0] == .time {
             TableColumn("Time", value: \.duration) { track in
                 Text(track.durationString).foregroundStyle(rowTextColor(track)).monospacedDigit()
+                .padding(.horizontal, 10)
             }
-            .width(50)
+            .width(min: 40, ideal: 50, max: 90)
         } else if library.orderedVisibleColumns.indices.contains(0), library.orderedVisibleColumns[0] == .rating {
             TableColumn("Rating", value: \.rating) { track in
                 RatingCellView(
@@ -503,6 +522,7 @@ struct TrackListView: View {
                     ),
                     isSelected: selection.count == 1 && selection.contains(track.id)
                 )
+                .padding(.horizontal, 10)
             }
             .width(min: 110, ideal: 130)
         }
@@ -518,68 +538,81 @@ struct TrackListView: View {
                     .lineLimit(1)
                     .contentShape(Rectangle())
                     .modifier(ReorderModifier(track: track, playlist: activePlaylist, library: library, isDragArmed: dragArmedIDs.contains(track.id)))
+                .padding(.horizontal, 10)
             }
             .width(min: 160, ideal: 260)
         } else if library.orderedVisibleColumns.indices.contains(1), library.orderedVisibleColumns[1] == .artist {
             TableColumn("Artist", value: \.artist) { track in
                 Text(track.artist).foregroundStyle(rowTextColor(track)).lineLimit(1)
+                .padding(.horizontal, 10)
             }
             .width(min: 100, ideal: 160)
         } else if library.orderedVisibleColumns.indices.contains(1), library.orderedVisibleColumns[1] == .album {
             TableColumn("Album", value: \.album) { track in
                 Text(track.album).foregroundStyle(rowTextColor(track)).lineLimit(1)
+                .padding(.horizontal, 10)
             }
             .width(min: 100, ideal: 180)
         } else if library.orderedVisibleColumns.indices.contains(1), library.orderedVisibleColumns[1] == .genre {
             TableColumn("Genre", value: \.genre) { track in
                 Text(track.genre).foregroundStyle(rowTextColor(track)).lineLimit(1)
+                .padding(.horizontal, 10)
             }
             .width(min: 70, ideal: 100)
         } else if library.orderedVisibleColumns.indices.contains(1), library.orderedVisibleColumns[1] == .year {
             TableColumn("Year", value: \.yearSortKey) { track in
                 Text(track.year.map(String.init) ?? "").foregroundStyle(rowTextColor(track))
+                .padding(.horizontal, 10)
             }
-            .width(46)
+            .width(min: 50, ideal: 60, max: 90)
         } else if library.orderedVisibleColumns.indices.contains(1), library.orderedVisibleColumns[1] == .trackNumber {
             TableColumn("Track #", value: \.trackNumberSortKey) { track in
                 Text(track.trackNumber.map(String.init) ?? "").foregroundStyle(rowTextColor(track))
+                .padding(.horizontal, 10)
             }
-            .width(50)
+            .width(min: 40, ideal: 50, max: 90)
         } else if library.orderedVisibleColumns.indices.contains(1), library.orderedVisibleColumns[1] == .discNumber {
             TableColumn("Disc #", value: \.discNumberSortKey) { track in
                 Text(track.discNumber.map(String.init) ?? "").foregroundStyle(rowTextColor(track))
+                .padding(.horizontal, 10)
             }
-            .width(50)
+            .width(min: 40, ideal: 50, max: 90)
         } else if library.orderedVisibleColumns.indices.contains(1), library.orderedVisibleColumns[1] == .bpm {
             TableColumn("BPM", value: \.bpmSortKey) { track in
                 Text(track.bpm.map(String.init) ?? "").foregroundStyle(rowTextColor(track))
+                .padding(.horizontal, 10)
             }
-            .width(46)
+            .width(min: 40, ideal: 46, max: 80)
         } else if library.orderedVisibleColumns.indices.contains(1), library.orderedVisibleColumns[1] == .key {
             TableColumn("Key", value: \.keySortKey) { track in
                 Text(track.key ?? "").foregroundStyle(rowTextColor(track))
+                .padding(.horizontal, 10)
             }
-            .width(46)
+            .width(min: 40, ideal: 46, max: 80)
         } else if library.orderedVisibleColumns.indices.contains(1), library.orderedVisibleColumns[1] == .comments {
             TableColumn("Comments", value: \.commentsSortKey) { track in
                 Text(track.comments ?? "").foregroundStyle(rowTextColor(track)).lineLimit(1)
+                .padding(.horizontal, 10)
             }
             .width(min: 100, ideal: 160)
         } else if library.orderedVisibleColumns.indices.contains(1), library.orderedVisibleColumns[1] == .plays {
             TableColumn("Plays", value: \.playCount) { track in
                 Text(track.playCount > 0 ? String(format: "%.1f", track.playCount) : "–").foregroundStyle(rowTextColor(track)).monospacedDigit()
+                .padding(.horizontal, 10)
             }
-            .width(46)
+            .width(min: 40, ideal: 46, max: 80)
         } else if library.orderedVisibleColumns.indices.contains(1), library.orderedVisibleColumns[1] == .tags {
             TableColumn("Tags", value: \.tagsSortKey) { track in
                 Text(track.tags.joined(separator: ", ")).foregroundStyle(rowTextColor(track)).lineLimit(1)
+                .padding(.horizontal, 10)
             }
             .width(min: 80, ideal: 140)
         } else if library.orderedVisibleColumns.indices.contains(1), library.orderedVisibleColumns[1] == .time {
             TableColumn("Time", value: \.duration) { track in
                 Text(track.durationString).foregroundStyle(rowTextColor(track)).monospacedDigit()
+                .padding(.horizontal, 10)
             }
-            .width(50)
+            .width(min: 40, ideal: 50, max: 90)
         } else if library.orderedVisibleColumns.indices.contains(1), library.orderedVisibleColumns[1] == .rating {
             TableColumn("Rating", value: \.rating) { track in
                 RatingCellView(
@@ -589,6 +622,7 @@ struct TrackListView: View {
                     ),
                     isSelected: selection.count == 1 && selection.contains(track.id)
                 )
+                .padding(.horizontal, 10)
             }
             .width(min: 110, ideal: 130)
         }
@@ -604,68 +638,81 @@ struct TrackListView: View {
                     .lineLimit(1)
                     .contentShape(Rectangle())
                     .modifier(ReorderModifier(track: track, playlist: activePlaylist, library: library, isDragArmed: dragArmedIDs.contains(track.id)))
+                .padding(.horizontal, 10)
             }
             .width(min: 160, ideal: 260)
         } else if library.orderedVisibleColumns.indices.contains(2), library.orderedVisibleColumns[2] == .artist {
             TableColumn("Artist", value: \.artist) { track in
                 Text(track.artist).foregroundStyle(rowTextColor(track)).lineLimit(1)
+                .padding(.horizontal, 10)
             }
             .width(min: 100, ideal: 160)
         } else if library.orderedVisibleColumns.indices.contains(2), library.orderedVisibleColumns[2] == .album {
             TableColumn("Album", value: \.album) { track in
                 Text(track.album).foregroundStyle(rowTextColor(track)).lineLimit(1)
+                .padding(.horizontal, 10)
             }
             .width(min: 100, ideal: 180)
         } else if library.orderedVisibleColumns.indices.contains(2), library.orderedVisibleColumns[2] == .genre {
             TableColumn("Genre", value: \.genre) { track in
                 Text(track.genre).foregroundStyle(rowTextColor(track)).lineLimit(1)
+                .padding(.horizontal, 10)
             }
             .width(min: 70, ideal: 100)
         } else if library.orderedVisibleColumns.indices.contains(2), library.orderedVisibleColumns[2] == .year {
             TableColumn("Year", value: \.yearSortKey) { track in
                 Text(track.year.map(String.init) ?? "").foregroundStyle(rowTextColor(track))
+                .padding(.horizontal, 10)
             }
-            .width(46)
+            .width(min: 50, ideal: 60, max: 90)
         } else if library.orderedVisibleColumns.indices.contains(2), library.orderedVisibleColumns[2] == .trackNumber {
             TableColumn("Track #", value: \.trackNumberSortKey) { track in
                 Text(track.trackNumber.map(String.init) ?? "").foregroundStyle(rowTextColor(track))
+                .padding(.horizontal, 10)
             }
-            .width(50)
+            .width(min: 40, ideal: 50, max: 90)
         } else if library.orderedVisibleColumns.indices.contains(2), library.orderedVisibleColumns[2] == .discNumber {
             TableColumn("Disc #", value: \.discNumberSortKey) { track in
                 Text(track.discNumber.map(String.init) ?? "").foregroundStyle(rowTextColor(track))
+                .padding(.horizontal, 10)
             }
-            .width(50)
+            .width(min: 40, ideal: 50, max: 90)
         } else if library.orderedVisibleColumns.indices.contains(2), library.orderedVisibleColumns[2] == .bpm {
             TableColumn("BPM", value: \.bpmSortKey) { track in
                 Text(track.bpm.map(String.init) ?? "").foregroundStyle(rowTextColor(track))
+                .padding(.horizontal, 10)
             }
-            .width(46)
+            .width(min: 40, ideal: 46, max: 80)
         } else if library.orderedVisibleColumns.indices.contains(2), library.orderedVisibleColumns[2] == .key {
             TableColumn("Key", value: \.keySortKey) { track in
                 Text(track.key ?? "").foregroundStyle(rowTextColor(track))
+                .padding(.horizontal, 10)
             }
-            .width(46)
+            .width(min: 40, ideal: 46, max: 80)
         } else if library.orderedVisibleColumns.indices.contains(2), library.orderedVisibleColumns[2] == .comments {
             TableColumn("Comments", value: \.commentsSortKey) { track in
                 Text(track.comments ?? "").foregroundStyle(rowTextColor(track)).lineLimit(1)
+                .padding(.horizontal, 10)
             }
             .width(min: 100, ideal: 160)
         } else if library.orderedVisibleColumns.indices.contains(2), library.orderedVisibleColumns[2] == .plays {
             TableColumn("Plays", value: \.playCount) { track in
                 Text(track.playCount > 0 ? String(format: "%.1f", track.playCount) : "–").foregroundStyle(rowTextColor(track)).monospacedDigit()
+                .padding(.horizontal, 10)
             }
-            .width(46)
+            .width(min: 40, ideal: 46, max: 80)
         } else if library.orderedVisibleColumns.indices.contains(2), library.orderedVisibleColumns[2] == .tags {
             TableColumn("Tags", value: \.tagsSortKey) { track in
                 Text(track.tags.joined(separator: ", ")).foregroundStyle(rowTextColor(track)).lineLimit(1)
+                .padding(.horizontal, 10)
             }
             .width(min: 80, ideal: 140)
         } else if library.orderedVisibleColumns.indices.contains(2), library.orderedVisibleColumns[2] == .time {
             TableColumn("Time", value: \.duration) { track in
                 Text(track.durationString).foregroundStyle(rowTextColor(track)).monospacedDigit()
+                .padding(.horizontal, 10)
             }
-            .width(50)
+            .width(min: 40, ideal: 50, max: 90)
         } else if library.orderedVisibleColumns.indices.contains(2), library.orderedVisibleColumns[2] == .rating {
             TableColumn("Rating", value: \.rating) { track in
                 RatingCellView(
@@ -675,6 +722,7 @@ struct TrackListView: View {
                     ),
                     isSelected: selection.count == 1 && selection.contains(track.id)
                 )
+                .padding(.horizontal, 10)
             }
             .width(min: 110, ideal: 130)
         }
@@ -690,68 +738,81 @@ struct TrackListView: View {
                     .lineLimit(1)
                     .contentShape(Rectangle())
                     .modifier(ReorderModifier(track: track, playlist: activePlaylist, library: library, isDragArmed: dragArmedIDs.contains(track.id)))
+                .padding(.horizontal, 10)
             }
             .width(min: 160, ideal: 260)
         } else if library.orderedVisibleColumns.indices.contains(3), library.orderedVisibleColumns[3] == .artist {
             TableColumn("Artist", value: \.artist) { track in
                 Text(track.artist).foregroundStyle(rowTextColor(track)).lineLimit(1)
+                .padding(.horizontal, 10)
             }
             .width(min: 100, ideal: 160)
         } else if library.orderedVisibleColumns.indices.contains(3), library.orderedVisibleColumns[3] == .album {
             TableColumn("Album", value: \.album) { track in
                 Text(track.album).foregroundStyle(rowTextColor(track)).lineLimit(1)
+                .padding(.horizontal, 10)
             }
             .width(min: 100, ideal: 180)
         } else if library.orderedVisibleColumns.indices.contains(3), library.orderedVisibleColumns[3] == .genre {
             TableColumn("Genre", value: \.genre) { track in
                 Text(track.genre).foregroundStyle(rowTextColor(track)).lineLimit(1)
+                .padding(.horizontal, 10)
             }
             .width(min: 70, ideal: 100)
         } else if library.orderedVisibleColumns.indices.contains(3), library.orderedVisibleColumns[3] == .year {
             TableColumn("Year", value: \.yearSortKey) { track in
                 Text(track.year.map(String.init) ?? "").foregroundStyle(rowTextColor(track))
+                .padding(.horizontal, 10)
             }
-            .width(46)
+            .width(min: 50, ideal: 60, max: 90)
         } else if library.orderedVisibleColumns.indices.contains(3), library.orderedVisibleColumns[3] == .trackNumber {
             TableColumn("Track #", value: \.trackNumberSortKey) { track in
                 Text(track.trackNumber.map(String.init) ?? "").foregroundStyle(rowTextColor(track))
+                .padding(.horizontal, 10)
             }
-            .width(50)
+            .width(min: 40, ideal: 50, max: 90)
         } else if library.orderedVisibleColumns.indices.contains(3), library.orderedVisibleColumns[3] == .discNumber {
             TableColumn("Disc #", value: \.discNumberSortKey) { track in
                 Text(track.discNumber.map(String.init) ?? "").foregroundStyle(rowTextColor(track))
+                .padding(.horizontal, 10)
             }
-            .width(50)
+            .width(min: 40, ideal: 50, max: 90)
         } else if library.orderedVisibleColumns.indices.contains(3), library.orderedVisibleColumns[3] == .bpm {
             TableColumn("BPM", value: \.bpmSortKey) { track in
                 Text(track.bpm.map(String.init) ?? "").foregroundStyle(rowTextColor(track))
+                .padding(.horizontal, 10)
             }
-            .width(46)
+            .width(min: 40, ideal: 46, max: 80)
         } else if library.orderedVisibleColumns.indices.contains(3), library.orderedVisibleColumns[3] == .key {
             TableColumn("Key", value: \.keySortKey) { track in
                 Text(track.key ?? "").foregroundStyle(rowTextColor(track))
+                .padding(.horizontal, 10)
             }
-            .width(46)
+            .width(min: 40, ideal: 46, max: 80)
         } else if library.orderedVisibleColumns.indices.contains(3), library.orderedVisibleColumns[3] == .comments {
             TableColumn("Comments", value: \.commentsSortKey) { track in
                 Text(track.comments ?? "").foregroundStyle(rowTextColor(track)).lineLimit(1)
+                .padding(.horizontal, 10)
             }
             .width(min: 100, ideal: 160)
         } else if library.orderedVisibleColumns.indices.contains(3), library.orderedVisibleColumns[3] == .plays {
             TableColumn("Plays", value: \.playCount) { track in
                 Text(track.playCount > 0 ? String(format: "%.1f", track.playCount) : "–").foregroundStyle(rowTextColor(track)).monospacedDigit()
+                .padding(.horizontal, 10)
             }
-            .width(46)
+            .width(min: 40, ideal: 46, max: 80)
         } else if library.orderedVisibleColumns.indices.contains(3), library.orderedVisibleColumns[3] == .tags {
             TableColumn("Tags", value: \.tagsSortKey) { track in
                 Text(track.tags.joined(separator: ", ")).foregroundStyle(rowTextColor(track)).lineLimit(1)
+                .padding(.horizontal, 10)
             }
             .width(min: 80, ideal: 140)
         } else if library.orderedVisibleColumns.indices.contains(3), library.orderedVisibleColumns[3] == .time {
             TableColumn("Time", value: \.duration) { track in
                 Text(track.durationString).foregroundStyle(rowTextColor(track)).monospacedDigit()
+                .padding(.horizontal, 10)
             }
-            .width(50)
+            .width(min: 40, ideal: 50, max: 90)
         } else if library.orderedVisibleColumns.indices.contains(3), library.orderedVisibleColumns[3] == .rating {
             TableColumn("Rating", value: \.rating) { track in
                 RatingCellView(
@@ -761,6 +822,7 @@ struct TrackListView: View {
                     ),
                     isSelected: selection.count == 1 && selection.contains(track.id)
                 )
+                .padding(.horizontal, 10)
             }
             .width(min: 110, ideal: 130)
         }
@@ -776,68 +838,81 @@ struct TrackListView: View {
                     .lineLimit(1)
                     .contentShape(Rectangle())
                     .modifier(ReorderModifier(track: track, playlist: activePlaylist, library: library, isDragArmed: dragArmedIDs.contains(track.id)))
+                .padding(.horizontal, 10)
             }
             .width(min: 160, ideal: 260)
         } else if library.orderedVisibleColumns.indices.contains(4), library.orderedVisibleColumns[4] == .artist {
             TableColumn("Artist", value: \.artist) { track in
                 Text(track.artist).foregroundStyle(rowTextColor(track)).lineLimit(1)
+                .padding(.horizontal, 10)
             }
             .width(min: 100, ideal: 160)
         } else if library.orderedVisibleColumns.indices.contains(4), library.orderedVisibleColumns[4] == .album {
             TableColumn("Album", value: \.album) { track in
                 Text(track.album).foregroundStyle(rowTextColor(track)).lineLimit(1)
+                .padding(.horizontal, 10)
             }
             .width(min: 100, ideal: 180)
         } else if library.orderedVisibleColumns.indices.contains(4), library.orderedVisibleColumns[4] == .genre {
             TableColumn("Genre", value: \.genre) { track in
                 Text(track.genre).foregroundStyle(rowTextColor(track)).lineLimit(1)
+                .padding(.horizontal, 10)
             }
             .width(min: 70, ideal: 100)
         } else if library.orderedVisibleColumns.indices.contains(4), library.orderedVisibleColumns[4] == .year {
             TableColumn("Year", value: \.yearSortKey) { track in
                 Text(track.year.map(String.init) ?? "").foregroundStyle(rowTextColor(track))
+                .padding(.horizontal, 10)
             }
-            .width(46)
+            .width(min: 50, ideal: 60, max: 90)
         } else if library.orderedVisibleColumns.indices.contains(4), library.orderedVisibleColumns[4] == .trackNumber {
             TableColumn("Track #", value: \.trackNumberSortKey) { track in
                 Text(track.trackNumber.map(String.init) ?? "").foregroundStyle(rowTextColor(track))
+                .padding(.horizontal, 10)
             }
-            .width(50)
+            .width(min: 40, ideal: 50, max: 90)
         } else if library.orderedVisibleColumns.indices.contains(4), library.orderedVisibleColumns[4] == .discNumber {
             TableColumn("Disc #", value: \.discNumberSortKey) { track in
                 Text(track.discNumber.map(String.init) ?? "").foregroundStyle(rowTextColor(track))
+                .padding(.horizontal, 10)
             }
-            .width(50)
+            .width(min: 40, ideal: 50, max: 90)
         } else if library.orderedVisibleColumns.indices.contains(4), library.orderedVisibleColumns[4] == .bpm {
             TableColumn("BPM", value: \.bpmSortKey) { track in
                 Text(track.bpm.map(String.init) ?? "").foregroundStyle(rowTextColor(track))
+                .padding(.horizontal, 10)
             }
-            .width(46)
+            .width(min: 40, ideal: 46, max: 80)
         } else if library.orderedVisibleColumns.indices.contains(4), library.orderedVisibleColumns[4] == .key {
             TableColumn("Key", value: \.keySortKey) { track in
                 Text(track.key ?? "").foregroundStyle(rowTextColor(track))
+                .padding(.horizontal, 10)
             }
-            .width(46)
+            .width(min: 40, ideal: 46, max: 80)
         } else if library.orderedVisibleColumns.indices.contains(4), library.orderedVisibleColumns[4] == .comments {
             TableColumn("Comments", value: \.commentsSortKey) { track in
                 Text(track.comments ?? "").foregroundStyle(rowTextColor(track)).lineLimit(1)
+                .padding(.horizontal, 10)
             }
             .width(min: 100, ideal: 160)
         } else if library.orderedVisibleColumns.indices.contains(4), library.orderedVisibleColumns[4] == .plays {
             TableColumn("Plays", value: \.playCount) { track in
                 Text(track.playCount > 0 ? String(format: "%.1f", track.playCount) : "–").foregroundStyle(rowTextColor(track)).monospacedDigit()
+                .padding(.horizontal, 10)
             }
-            .width(46)
+            .width(min: 40, ideal: 46, max: 80)
         } else if library.orderedVisibleColumns.indices.contains(4), library.orderedVisibleColumns[4] == .tags {
             TableColumn("Tags", value: \.tagsSortKey) { track in
                 Text(track.tags.joined(separator: ", ")).foregroundStyle(rowTextColor(track)).lineLimit(1)
+                .padding(.horizontal, 10)
             }
             .width(min: 80, ideal: 140)
         } else if library.orderedVisibleColumns.indices.contains(4), library.orderedVisibleColumns[4] == .time {
             TableColumn("Time", value: \.duration) { track in
                 Text(track.durationString).foregroundStyle(rowTextColor(track)).monospacedDigit()
+                .padding(.horizontal, 10)
             }
-            .width(50)
+            .width(min: 40, ideal: 50, max: 90)
         } else if library.orderedVisibleColumns.indices.contains(4), library.orderedVisibleColumns[4] == .rating {
             TableColumn("Rating", value: \.rating) { track in
                 RatingCellView(
@@ -847,6 +922,7 @@ struct TrackListView: View {
                     ),
                     isSelected: selection.count == 1 && selection.contains(track.id)
                 )
+                .padding(.horizontal, 10)
             }
             .width(min: 110, ideal: 130)
         }
@@ -862,68 +938,81 @@ struct TrackListView: View {
                     .lineLimit(1)
                     .contentShape(Rectangle())
                     .modifier(ReorderModifier(track: track, playlist: activePlaylist, library: library, isDragArmed: dragArmedIDs.contains(track.id)))
+                .padding(.horizontal, 10)
             }
             .width(min: 160, ideal: 260)
         } else if library.orderedVisibleColumns.indices.contains(5), library.orderedVisibleColumns[5] == .artist {
             TableColumn("Artist", value: \.artist) { track in
                 Text(track.artist).foregroundStyle(rowTextColor(track)).lineLimit(1)
+                .padding(.horizontal, 10)
             }
             .width(min: 100, ideal: 160)
         } else if library.orderedVisibleColumns.indices.contains(5), library.orderedVisibleColumns[5] == .album {
             TableColumn("Album", value: \.album) { track in
                 Text(track.album).foregroundStyle(rowTextColor(track)).lineLimit(1)
+                .padding(.horizontal, 10)
             }
             .width(min: 100, ideal: 180)
         } else if library.orderedVisibleColumns.indices.contains(5), library.orderedVisibleColumns[5] == .genre {
             TableColumn("Genre", value: \.genre) { track in
                 Text(track.genre).foregroundStyle(rowTextColor(track)).lineLimit(1)
+                .padding(.horizontal, 10)
             }
             .width(min: 70, ideal: 100)
         } else if library.orderedVisibleColumns.indices.contains(5), library.orderedVisibleColumns[5] == .year {
             TableColumn("Year", value: \.yearSortKey) { track in
                 Text(track.year.map(String.init) ?? "").foregroundStyle(rowTextColor(track))
+                .padding(.horizontal, 10)
             }
-            .width(46)
+            .width(min: 50, ideal: 60, max: 90)
         } else if library.orderedVisibleColumns.indices.contains(5), library.orderedVisibleColumns[5] == .trackNumber {
             TableColumn("Track #", value: \.trackNumberSortKey) { track in
                 Text(track.trackNumber.map(String.init) ?? "").foregroundStyle(rowTextColor(track))
+                .padding(.horizontal, 10)
             }
-            .width(50)
+            .width(min: 40, ideal: 50, max: 90)
         } else if library.orderedVisibleColumns.indices.contains(5), library.orderedVisibleColumns[5] == .discNumber {
             TableColumn("Disc #", value: \.discNumberSortKey) { track in
                 Text(track.discNumber.map(String.init) ?? "").foregroundStyle(rowTextColor(track))
+                .padding(.horizontal, 10)
             }
-            .width(50)
+            .width(min: 40, ideal: 50, max: 90)
         } else if library.orderedVisibleColumns.indices.contains(5), library.orderedVisibleColumns[5] == .bpm {
             TableColumn("BPM", value: \.bpmSortKey) { track in
                 Text(track.bpm.map(String.init) ?? "").foregroundStyle(rowTextColor(track))
+                .padding(.horizontal, 10)
             }
-            .width(46)
+            .width(min: 40, ideal: 46, max: 80)
         } else if library.orderedVisibleColumns.indices.contains(5), library.orderedVisibleColumns[5] == .key {
             TableColumn("Key", value: \.keySortKey) { track in
                 Text(track.key ?? "").foregroundStyle(rowTextColor(track))
+                .padding(.horizontal, 10)
             }
-            .width(46)
+            .width(min: 40, ideal: 46, max: 80)
         } else if library.orderedVisibleColumns.indices.contains(5), library.orderedVisibleColumns[5] == .comments {
             TableColumn("Comments", value: \.commentsSortKey) { track in
                 Text(track.comments ?? "").foregroundStyle(rowTextColor(track)).lineLimit(1)
+                .padding(.horizontal, 10)
             }
             .width(min: 100, ideal: 160)
         } else if library.orderedVisibleColumns.indices.contains(5), library.orderedVisibleColumns[5] == .plays {
             TableColumn("Plays", value: \.playCount) { track in
                 Text(track.playCount > 0 ? String(format: "%.1f", track.playCount) : "–").foregroundStyle(rowTextColor(track)).monospacedDigit()
+                .padding(.horizontal, 10)
             }
-            .width(46)
+            .width(min: 40, ideal: 46, max: 80)
         } else if library.orderedVisibleColumns.indices.contains(5), library.orderedVisibleColumns[5] == .tags {
             TableColumn("Tags", value: \.tagsSortKey) { track in
                 Text(track.tags.joined(separator: ", ")).foregroundStyle(rowTextColor(track)).lineLimit(1)
+                .padding(.horizontal, 10)
             }
             .width(min: 80, ideal: 140)
         } else if library.orderedVisibleColumns.indices.contains(5), library.orderedVisibleColumns[5] == .time {
             TableColumn("Time", value: \.duration) { track in
                 Text(track.durationString).foregroundStyle(rowTextColor(track)).monospacedDigit()
+                .padding(.horizontal, 10)
             }
-            .width(50)
+            .width(min: 40, ideal: 50, max: 90)
         } else if library.orderedVisibleColumns.indices.contains(5), library.orderedVisibleColumns[5] == .rating {
             TableColumn("Rating", value: \.rating) { track in
                 RatingCellView(
@@ -933,6 +1022,7 @@ struct TrackListView: View {
                     ),
                     isSelected: selection.count == 1 && selection.contains(track.id)
                 )
+                .padding(.horizontal, 10)
             }
             .width(min: 110, ideal: 130)
         }
@@ -948,68 +1038,81 @@ struct TrackListView: View {
                     .lineLimit(1)
                     .contentShape(Rectangle())
                     .modifier(ReorderModifier(track: track, playlist: activePlaylist, library: library, isDragArmed: dragArmedIDs.contains(track.id)))
+                .padding(.horizontal, 10)
             }
             .width(min: 160, ideal: 260)
         } else if library.orderedVisibleColumns.indices.contains(6), library.orderedVisibleColumns[6] == .artist {
             TableColumn("Artist", value: \.artist) { track in
                 Text(track.artist).foregroundStyle(rowTextColor(track)).lineLimit(1)
+                .padding(.horizontal, 10)
             }
             .width(min: 100, ideal: 160)
         } else if library.orderedVisibleColumns.indices.contains(6), library.orderedVisibleColumns[6] == .album {
             TableColumn("Album", value: \.album) { track in
                 Text(track.album).foregroundStyle(rowTextColor(track)).lineLimit(1)
+                .padding(.horizontal, 10)
             }
             .width(min: 100, ideal: 180)
         } else if library.orderedVisibleColumns.indices.contains(6), library.orderedVisibleColumns[6] == .genre {
             TableColumn("Genre", value: \.genre) { track in
                 Text(track.genre).foregroundStyle(rowTextColor(track)).lineLimit(1)
+                .padding(.horizontal, 10)
             }
             .width(min: 70, ideal: 100)
         } else if library.orderedVisibleColumns.indices.contains(6), library.orderedVisibleColumns[6] == .year {
             TableColumn("Year", value: \.yearSortKey) { track in
                 Text(track.year.map(String.init) ?? "").foregroundStyle(rowTextColor(track))
+                .padding(.horizontal, 10)
             }
-            .width(46)
+            .width(min: 50, ideal: 60, max: 90)
         } else if library.orderedVisibleColumns.indices.contains(6), library.orderedVisibleColumns[6] == .trackNumber {
             TableColumn("Track #", value: \.trackNumberSortKey) { track in
                 Text(track.trackNumber.map(String.init) ?? "").foregroundStyle(rowTextColor(track))
+                .padding(.horizontal, 10)
             }
-            .width(50)
+            .width(min: 40, ideal: 50, max: 90)
         } else if library.orderedVisibleColumns.indices.contains(6), library.orderedVisibleColumns[6] == .discNumber {
             TableColumn("Disc #", value: \.discNumberSortKey) { track in
                 Text(track.discNumber.map(String.init) ?? "").foregroundStyle(rowTextColor(track))
+                .padding(.horizontal, 10)
             }
-            .width(50)
+            .width(min: 40, ideal: 50, max: 90)
         } else if library.orderedVisibleColumns.indices.contains(6), library.orderedVisibleColumns[6] == .bpm {
             TableColumn("BPM", value: \.bpmSortKey) { track in
                 Text(track.bpm.map(String.init) ?? "").foregroundStyle(rowTextColor(track))
+                .padding(.horizontal, 10)
             }
-            .width(46)
+            .width(min: 40, ideal: 46, max: 80)
         } else if library.orderedVisibleColumns.indices.contains(6), library.orderedVisibleColumns[6] == .key {
             TableColumn("Key", value: \.keySortKey) { track in
                 Text(track.key ?? "").foregroundStyle(rowTextColor(track))
+                .padding(.horizontal, 10)
             }
-            .width(46)
+            .width(min: 40, ideal: 46, max: 80)
         } else if library.orderedVisibleColumns.indices.contains(6), library.orderedVisibleColumns[6] == .comments {
             TableColumn("Comments", value: \.commentsSortKey) { track in
                 Text(track.comments ?? "").foregroundStyle(rowTextColor(track)).lineLimit(1)
+                .padding(.horizontal, 10)
             }
             .width(min: 100, ideal: 160)
         } else if library.orderedVisibleColumns.indices.contains(6), library.orderedVisibleColumns[6] == .plays {
             TableColumn("Plays", value: \.playCount) { track in
                 Text(track.playCount > 0 ? String(format: "%.1f", track.playCount) : "–").foregroundStyle(rowTextColor(track)).monospacedDigit()
+                .padding(.horizontal, 10)
             }
-            .width(46)
+            .width(min: 40, ideal: 46, max: 80)
         } else if library.orderedVisibleColumns.indices.contains(6), library.orderedVisibleColumns[6] == .tags {
             TableColumn("Tags", value: \.tagsSortKey) { track in
                 Text(track.tags.joined(separator: ", ")).foregroundStyle(rowTextColor(track)).lineLimit(1)
+                .padding(.horizontal, 10)
             }
             .width(min: 80, ideal: 140)
         } else if library.orderedVisibleColumns.indices.contains(6), library.orderedVisibleColumns[6] == .time {
             TableColumn("Time", value: \.duration) { track in
                 Text(track.durationString).foregroundStyle(rowTextColor(track)).monospacedDigit()
+                .padding(.horizontal, 10)
             }
-            .width(50)
+            .width(min: 40, ideal: 50, max: 90)
         } else if library.orderedVisibleColumns.indices.contains(6), library.orderedVisibleColumns[6] == .rating {
             TableColumn("Rating", value: \.rating) { track in
                 RatingCellView(
@@ -1019,6 +1122,7 @@ struct TrackListView: View {
                     ),
                     isSelected: selection.count == 1 && selection.contains(track.id)
                 )
+                .padding(.horizontal, 10)
             }
             .width(min: 110, ideal: 130)
         }
@@ -1034,68 +1138,81 @@ struct TrackListView: View {
                     .lineLimit(1)
                     .contentShape(Rectangle())
                     .modifier(ReorderModifier(track: track, playlist: activePlaylist, library: library, isDragArmed: dragArmedIDs.contains(track.id)))
+                .padding(.horizontal, 10)
             }
             .width(min: 160, ideal: 260)
         } else if library.orderedVisibleColumns.indices.contains(7), library.orderedVisibleColumns[7] == .artist {
             TableColumn("Artist", value: \.artist) { track in
                 Text(track.artist).foregroundStyle(rowTextColor(track)).lineLimit(1)
+                .padding(.horizontal, 10)
             }
             .width(min: 100, ideal: 160)
         } else if library.orderedVisibleColumns.indices.contains(7), library.orderedVisibleColumns[7] == .album {
             TableColumn("Album", value: \.album) { track in
                 Text(track.album).foregroundStyle(rowTextColor(track)).lineLimit(1)
+                .padding(.horizontal, 10)
             }
             .width(min: 100, ideal: 180)
         } else if library.orderedVisibleColumns.indices.contains(7), library.orderedVisibleColumns[7] == .genre {
             TableColumn("Genre", value: \.genre) { track in
                 Text(track.genre).foregroundStyle(rowTextColor(track)).lineLimit(1)
+                .padding(.horizontal, 10)
             }
             .width(min: 70, ideal: 100)
         } else if library.orderedVisibleColumns.indices.contains(7), library.orderedVisibleColumns[7] == .year {
             TableColumn("Year", value: \.yearSortKey) { track in
                 Text(track.year.map(String.init) ?? "").foregroundStyle(rowTextColor(track))
+                .padding(.horizontal, 10)
             }
-            .width(46)
+            .width(min: 50, ideal: 60, max: 90)
         } else if library.orderedVisibleColumns.indices.contains(7), library.orderedVisibleColumns[7] == .trackNumber {
             TableColumn("Track #", value: \.trackNumberSortKey) { track in
                 Text(track.trackNumber.map(String.init) ?? "").foregroundStyle(rowTextColor(track))
+                .padding(.horizontal, 10)
             }
-            .width(50)
+            .width(min: 40, ideal: 50, max: 90)
         } else if library.orderedVisibleColumns.indices.contains(7), library.orderedVisibleColumns[7] == .discNumber {
             TableColumn("Disc #", value: \.discNumberSortKey) { track in
                 Text(track.discNumber.map(String.init) ?? "").foregroundStyle(rowTextColor(track))
+                .padding(.horizontal, 10)
             }
-            .width(50)
+            .width(min: 40, ideal: 50, max: 90)
         } else if library.orderedVisibleColumns.indices.contains(7), library.orderedVisibleColumns[7] == .bpm {
             TableColumn("BPM", value: \.bpmSortKey) { track in
                 Text(track.bpm.map(String.init) ?? "").foregroundStyle(rowTextColor(track))
+                .padding(.horizontal, 10)
             }
-            .width(46)
+            .width(min: 40, ideal: 46, max: 80)
         } else if library.orderedVisibleColumns.indices.contains(7), library.orderedVisibleColumns[7] == .key {
             TableColumn("Key", value: \.keySortKey) { track in
                 Text(track.key ?? "").foregroundStyle(rowTextColor(track))
+                .padding(.horizontal, 10)
             }
-            .width(46)
+            .width(min: 40, ideal: 46, max: 80)
         } else if library.orderedVisibleColumns.indices.contains(7), library.orderedVisibleColumns[7] == .comments {
             TableColumn("Comments", value: \.commentsSortKey) { track in
                 Text(track.comments ?? "").foregroundStyle(rowTextColor(track)).lineLimit(1)
+                .padding(.horizontal, 10)
             }
             .width(min: 100, ideal: 160)
         } else if library.orderedVisibleColumns.indices.contains(7), library.orderedVisibleColumns[7] == .plays {
             TableColumn("Plays", value: \.playCount) { track in
                 Text(track.playCount > 0 ? String(format: "%.1f", track.playCount) : "–").foregroundStyle(rowTextColor(track)).monospacedDigit()
+                .padding(.horizontal, 10)
             }
-            .width(46)
+            .width(min: 40, ideal: 46, max: 80)
         } else if library.orderedVisibleColumns.indices.contains(7), library.orderedVisibleColumns[7] == .tags {
             TableColumn("Tags", value: \.tagsSortKey) { track in
                 Text(track.tags.joined(separator: ", ")).foregroundStyle(rowTextColor(track)).lineLimit(1)
+                .padding(.horizontal, 10)
             }
             .width(min: 80, ideal: 140)
         } else if library.orderedVisibleColumns.indices.contains(7), library.orderedVisibleColumns[7] == .time {
             TableColumn("Time", value: \.duration) { track in
                 Text(track.durationString).foregroundStyle(rowTextColor(track)).monospacedDigit()
+                .padding(.horizontal, 10)
             }
-            .width(50)
+            .width(min: 40, ideal: 50, max: 90)
         } else if library.orderedVisibleColumns.indices.contains(7), library.orderedVisibleColumns[7] == .rating {
             TableColumn("Rating", value: \.rating) { track in
                 RatingCellView(
@@ -1105,6 +1222,7 @@ struct TrackListView: View {
                     ),
                     isSelected: selection.count == 1 && selection.contains(track.id)
                 )
+                .padding(.horizontal, 10)
             }
             .width(min: 110, ideal: 130)
         }
@@ -1120,68 +1238,81 @@ struct TrackListView: View {
                     .lineLimit(1)
                     .contentShape(Rectangle())
                     .modifier(ReorderModifier(track: track, playlist: activePlaylist, library: library, isDragArmed: dragArmedIDs.contains(track.id)))
+                .padding(.horizontal, 10)
             }
             .width(min: 160, ideal: 260)
         } else if library.orderedVisibleColumns.indices.contains(8), library.orderedVisibleColumns[8] == .artist {
             TableColumn("Artist", value: \.artist) { track in
                 Text(track.artist).foregroundStyle(rowTextColor(track)).lineLimit(1)
+                .padding(.horizontal, 10)
             }
             .width(min: 100, ideal: 160)
         } else if library.orderedVisibleColumns.indices.contains(8), library.orderedVisibleColumns[8] == .album {
             TableColumn("Album", value: \.album) { track in
                 Text(track.album).foregroundStyle(rowTextColor(track)).lineLimit(1)
+                .padding(.horizontal, 10)
             }
             .width(min: 100, ideal: 180)
         } else if library.orderedVisibleColumns.indices.contains(8), library.orderedVisibleColumns[8] == .genre {
             TableColumn("Genre", value: \.genre) { track in
                 Text(track.genre).foregroundStyle(rowTextColor(track)).lineLimit(1)
+                .padding(.horizontal, 10)
             }
             .width(min: 70, ideal: 100)
         } else if library.orderedVisibleColumns.indices.contains(8), library.orderedVisibleColumns[8] == .year {
             TableColumn("Year", value: \.yearSortKey) { track in
                 Text(track.year.map(String.init) ?? "").foregroundStyle(rowTextColor(track))
+                .padding(.horizontal, 10)
             }
-            .width(46)
+            .width(min: 50, ideal: 60, max: 90)
         } else if library.orderedVisibleColumns.indices.contains(8), library.orderedVisibleColumns[8] == .trackNumber {
             TableColumn("Track #", value: \.trackNumberSortKey) { track in
                 Text(track.trackNumber.map(String.init) ?? "").foregroundStyle(rowTextColor(track))
+                .padding(.horizontal, 10)
             }
-            .width(50)
+            .width(min: 40, ideal: 50, max: 90)
         } else if library.orderedVisibleColumns.indices.contains(8), library.orderedVisibleColumns[8] == .discNumber {
             TableColumn("Disc #", value: \.discNumberSortKey) { track in
                 Text(track.discNumber.map(String.init) ?? "").foregroundStyle(rowTextColor(track))
+                .padding(.horizontal, 10)
             }
-            .width(50)
+            .width(min: 40, ideal: 50, max: 90)
         } else if library.orderedVisibleColumns.indices.contains(8), library.orderedVisibleColumns[8] == .bpm {
             TableColumn("BPM", value: \.bpmSortKey) { track in
                 Text(track.bpm.map(String.init) ?? "").foregroundStyle(rowTextColor(track))
+                .padding(.horizontal, 10)
             }
-            .width(46)
+            .width(min: 40, ideal: 46, max: 80)
         } else if library.orderedVisibleColumns.indices.contains(8), library.orderedVisibleColumns[8] == .key {
             TableColumn("Key", value: \.keySortKey) { track in
                 Text(track.key ?? "").foregroundStyle(rowTextColor(track))
+                .padding(.horizontal, 10)
             }
-            .width(46)
+            .width(min: 40, ideal: 46, max: 80)
         } else if library.orderedVisibleColumns.indices.contains(8), library.orderedVisibleColumns[8] == .comments {
             TableColumn("Comments", value: \.commentsSortKey) { track in
                 Text(track.comments ?? "").foregroundStyle(rowTextColor(track)).lineLimit(1)
+                .padding(.horizontal, 10)
             }
             .width(min: 100, ideal: 160)
         } else if library.orderedVisibleColumns.indices.contains(8), library.orderedVisibleColumns[8] == .plays {
             TableColumn("Plays", value: \.playCount) { track in
                 Text(track.playCount > 0 ? String(format: "%.1f", track.playCount) : "–").foregroundStyle(rowTextColor(track)).monospacedDigit()
+                .padding(.horizontal, 10)
             }
-            .width(46)
+            .width(min: 40, ideal: 46, max: 80)
         } else if library.orderedVisibleColumns.indices.contains(8), library.orderedVisibleColumns[8] == .tags {
             TableColumn("Tags", value: \.tagsSortKey) { track in
                 Text(track.tags.joined(separator: ", ")).foregroundStyle(rowTextColor(track)).lineLimit(1)
+                .padding(.horizontal, 10)
             }
             .width(min: 80, ideal: 140)
         } else if library.orderedVisibleColumns.indices.contains(8), library.orderedVisibleColumns[8] == .time {
             TableColumn("Time", value: \.duration) { track in
                 Text(track.durationString).foregroundStyle(rowTextColor(track)).monospacedDigit()
+                .padding(.horizontal, 10)
             }
-            .width(50)
+            .width(min: 40, ideal: 50, max: 90)
         } else if library.orderedVisibleColumns.indices.contains(8), library.orderedVisibleColumns[8] == .rating {
             TableColumn("Rating", value: \.rating) { track in
                 RatingCellView(
@@ -1191,6 +1322,7 @@ struct TrackListView: View {
                     ),
                     isSelected: selection.count == 1 && selection.contains(track.id)
                 )
+                .padding(.horizontal, 10)
             }
             .width(min: 110, ideal: 130)
         }
@@ -1206,68 +1338,81 @@ struct TrackListView: View {
                     .lineLimit(1)
                     .contentShape(Rectangle())
                     .modifier(ReorderModifier(track: track, playlist: activePlaylist, library: library, isDragArmed: dragArmedIDs.contains(track.id)))
+                .padding(.horizontal, 10)
             }
             .width(min: 160, ideal: 260)
         } else if library.orderedVisibleColumns.indices.contains(9), library.orderedVisibleColumns[9] == .artist {
             TableColumn("Artist", value: \.artist) { track in
                 Text(track.artist).foregroundStyle(rowTextColor(track)).lineLimit(1)
+                .padding(.horizontal, 10)
             }
             .width(min: 100, ideal: 160)
         } else if library.orderedVisibleColumns.indices.contains(9), library.orderedVisibleColumns[9] == .album {
             TableColumn("Album", value: \.album) { track in
                 Text(track.album).foregroundStyle(rowTextColor(track)).lineLimit(1)
+                .padding(.horizontal, 10)
             }
             .width(min: 100, ideal: 180)
         } else if library.orderedVisibleColumns.indices.contains(9), library.orderedVisibleColumns[9] == .genre {
             TableColumn("Genre", value: \.genre) { track in
                 Text(track.genre).foregroundStyle(rowTextColor(track)).lineLimit(1)
+                .padding(.horizontal, 10)
             }
             .width(min: 70, ideal: 100)
         } else if library.orderedVisibleColumns.indices.contains(9), library.orderedVisibleColumns[9] == .year {
             TableColumn("Year", value: \.yearSortKey) { track in
                 Text(track.year.map(String.init) ?? "").foregroundStyle(rowTextColor(track))
+                .padding(.horizontal, 10)
             }
-            .width(46)
+            .width(min: 50, ideal: 60, max: 90)
         } else if library.orderedVisibleColumns.indices.contains(9), library.orderedVisibleColumns[9] == .trackNumber {
             TableColumn("Track #", value: \.trackNumberSortKey) { track in
                 Text(track.trackNumber.map(String.init) ?? "").foregroundStyle(rowTextColor(track))
+                .padding(.horizontal, 10)
             }
-            .width(50)
+            .width(min: 40, ideal: 50, max: 90)
         } else if library.orderedVisibleColumns.indices.contains(9), library.orderedVisibleColumns[9] == .discNumber {
             TableColumn("Disc #", value: \.discNumberSortKey) { track in
                 Text(track.discNumber.map(String.init) ?? "").foregroundStyle(rowTextColor(track))
+                .padding(.horizontal, 10)
             }
-            .width(50)
+            .width(min: 40, ideal: 50, max: 90)
         } else if library.orderedVisibleColumns.indices.contains(9), library.orderedVisibleColumns[9] == .bpm {
             TableColumn("BPM", value: \.bpmSortKey) { track in
                 Text(track.bpm.map(String.init) ?? "").foregroundStyle(rowTextColor(track))
+                .padding(.horizontal, 10)
             }
-            .width(46)
+            .width(min: 40, ideal: 46, max: 80)
         } else if library.orderedVisibleColumns.indices.contains(9), library.orderedVisibleColumns[9] == .key {
             TableColumn("Key", value: \.keySortKey) { track in
                 Text(track.key ?? "").foregroundStyle(rowTextColor(track))
+                .padding(.horizontal, 10)
             }
-            .width(46)
+            .width(min: 40, ideal: 46, max: 80)
         } else if library.orderedVisibleColumns.indices.contains(9), library.orderedVisibleColumns[9] == .comments {
             TableColumn("Comments", value: \.commentsSortKey) { track in
                 Text(track.comments ?? "").foregroundStyle(rowTextColor(track)).lineLimit(1)
+                .padding(.horizontal, 10)
             }
             .width(min: 100, ideal: 160)
         } else if library.orderedVisibleColumns.indices.contains(9), library.orderedVisibleColumns[9] == .plays {
             TableColumn("Plays", value: \.playCount) { track in
                 Text(track.playCount > 0 ? String(format: "%.1f", track.playCount) : "–").foregroundStyle(rowTextColor(track)).monospacedDigit()
+                .padding(.horizontal, 10)
             }
-            .width(46)
+            .width(min: 40, ideal: 46, max: 80)
         } else if library.orderedVisibleColumns.indices.contains(9), library.orderedVisibleColumns[9] == .tags {
             TableColumn("Tags", value: \.tagsSortKey) { track in
                 Text(track.tags.joined(separator: ", ")).foregroundStyle(rowTextColor(track)).lineLimit(1)
+                .padding(.horizontal, 10)
             }
             .width(min: 80, ideal: 140)
         } else if library.orderedVisibleColumns.indices.contains(9), library.orderedVisibleColumns[9] == .time {
             TableColumn("Time", value: \.duration) { track in
                 Text(track.durationString).foregroundStyle(rowTextColor(track)).monospacedDigit()
+                .padding(.horizontal, 10)
             }
-            .width(50)
+            .width(min: 40, ideal: 50, max: 90)
         } else if library.orderedVisibleColumns.indices.contains(9), library.orderedVisibleColumns[9] == .rating {
             TableColumn("Rating", value: \.rating) { track in
                 RatingCellView(
@@ -1277,6 +1422,7 @@ struct TrackListView: View {
                     ),
                     isSelected: selection.count == 1 && selection.contains(track.id)
                 )
+                .padding(.horizontal, 10)
             }
             .width(min: 110, ideal: 130)
         }
@@ -1292,68 +1438,81 @@ struct TrackListView: View {
                     .lineLimit(1)
                     .contentShape(Rectangle())
                     .modifier(ReorderModifier(track: track, playlist: activePlaylist, library: library, isDragArmed: dragArmedIDs.contains(track.id)))
+                .padding(.horizontal, 10)
             }
             .width(min: 160, ideal: 260)
         } else if library.orderedVisibleColumns.indices.contains(10), library.orderedVisibleColumns[10] == .artist {
             TableColumn("Artist", value: \.artist) { track in
                 Text(track.artist).foregroundStyle(rowTextColor(track)).lineLimit(1)
+                .padding(.horizontal, 10)
             }
             .width(min: 100, ideal: 160)
         } else if library.orderedVisibleColumns.indices.contains(10), library.orderedVisibleColumns[10] == .album {
             TableColumn("Album", value: \.album) { track in
                 Text(track.album).foregroundStyle(rowTextColor(track)).lineLimit(1)
+                .padding(.horizontal, 10)
             }
             .width(min: 100, ideal: 180)
         } else if library.orderedVisibleColumns.indices.contains(10), library.orderedVisibleColumns[10] == .genre {
             TableColumn("Genre", value: \.genre) { track in
                 Text(track.genre).foregroundStyle(rowTextColor(track)).lineLimit(1)
+                .padding(.horizontal, 10)
             }
             .width(min: 70, ideal: 100)
         } else if library.orderedVisibleColumns.indices.contains(10), library.orderedVisibleColumns[10] == .year {
             TableColumn("Year", value: \.yearSortKey) { track in
                 Text(track.year.map(String.init) ?? "").foregroundStyle(rowTextColor(track))
+                .padding(.horizontal, 10)
             }
-            .width(46)
+            .width(min: 50, ideal: 60, max: 90)
         } else if library.orderedVisibleColumns.indices.contains(10), library.orderedVisibleColumns[10] == .trackNumber {
             TableColumn("Track #", value: \.trackNumberSortKey) { track in
                 Text(track.trackNumber.map(String.init) ?? "").foregroundStyle(rowTextColor(track))
+                .padding(.horizontal, 10)
             }
-            .width(50)
+            .width(min: 40, ideal: 50, max: 90)
         } else if library.orderedVisibleColumns.indices.contains(10), library.orderedVisibleColumns[10] == .discNumber {
             TableColumn("Disc #", value: \.discNumberSortKey) { track in
                 Text(track.discNumber.map(String.init) ?? "").foregroundStyle(rowTextColor(track))
+                .padding(.horizontal, 10)
             }
-            .width(50)
+            .width(min: 40, ideal: 50, max: 90)
         } else if library.orderedVisibleColumns.indices.contains(10), library.orderedVisibleColumns[10] == .bpm {
             TableColumn("BPM", value: \.bpmSortKey) { track in
                 Text(track.bpm.map(String.init) ?? "").foregroundStyle(rowTextColor(track))
+                .padding(.horizontal, 10)
             }
-            .width(46)
+            .width(min: 40, ideal: 46, max: 80)
         } else if library.orderedVisibleColumns.indices.contains(10), library.orderedVisibleColumns[10] == .key {
             TableColumn("Key", value: \.keySortKey) { track in
                 Text(track.key ?? "").foregroundStyle(rowTextColor(track))
+                .padding(.horizontal, 10)
             }
-            .width(46)
+            .width(min: 40, ideal: 46, max: 80)
         } else if library.orderedVisibleColumns.indices.contains(10), library.orderedVisibleColumns[10] == .comments {
             TableColumn("Comments", value: \.commentsSortKey) { track in
                 Text(track.comments ?? "").foregroundStyle(rowTextColor(track)).lineLimit(1)
+                .padding(.horizontal, 10)
             }
             .width(min: 100, ideal: 160)
         } else if library.orderedVisibleColumns.indices.contains(10), library.orderedVisibleColumns[10] == .plays {
             TableColumn("Plays", value: \.playCount) { track in
                 Text(track.playCount > 0 ? String(format: "%.1f", track.playCount) : "–").foregroundStyle(rowTextColor(track)).monospacedDigit()
+                .padding(.horizontal, 10)
             }
-            .width(46)
+            .width(min: 40, ideal: 46, max: 80)
         } else if library.orderedVisibleColumns.indices.contains(10), library.orderedVisibleColumns[10] == .tags {
             TableColumn("Tags", value: \.tagsSortKey) { track in
                 Text(track.tags.joined(separator: ", ")).foregroundStyle(rowTextColor(track)).lineLimit(1)
+                .padding(.horizontal, 10)
             }
             .width(min: 80, ideal: 140)
         } else if library.orderedVisibleColumns.indices.contains(10), library.orderedVisibleColumns[10] == .time {
             TableColumn("Time", value: \.duration) { track in
                 Text(track.durationString).foregroundStyle(rowTextColor(track)).monospacedDigit()
+                .padding(.horizontal, 10)
             }
-            .width(50)
+            .width(min: 40, ideal: 50, max: 90)
         } else if library.orderedVisibleColumns.indices.contains(10), library.orderedVisibleColumns[10] == .rating {
             TableColumn("Rating", value: \.rating) { track in
                 RatingCellView(
@@ -1363,6 +1522,7 @@ struct TrackListView: View {
                     ),
                     isSelected: selection.count == 1 && selection.contains(track.id)
                 )
+                .padding(.horizontal, 10)
             }
             .width(min: 110, ideal: 130)
         }
@@ -1378,68 +1538,81 @@ struct TrackListView: View {
                     .lineLimit(1)
                     .contentShape(Rectangle())
                     .modifier(ReorderModifier(track: track, playlist: activePlaylist, library: library, isDragArmed: dragArmedIDs.contains(track.id)))
+                .padding(.horizontal, 10)
             }
             .width(min: 160, ideal: 260)
         } else if library.orderedVisibleColumns.indices.contains(11), library.orderedVisibleColumns[11] == .artist {
             TableColumn("Artist", value: \.artist) { track in
                 Text(track.artist).foregroundStyle(rowTextColor(track)).lineLimit(1)
+                .padding(.horizontal, 10)
             }
             .width(min: 100, ideal: 160)
         } else if library.orderedVisibleColumns.indices.contains(11), library.orderedVisibleColumns[11] == .album {
             TableColumn("Album", value: \.album) { track in
                 Text(track.album).foregroundStyle(rowTextColor(track)).lineLimit(1)
+                .padding(.horizontal, 10)
             }
             .width(min: 100, ideal: 180)
         } else if library.orderedVisibleColumns.indices.contains(11), library.orderedVisibleColumns[11] == .genre {
             TableColumn("Genre", value: \.genre) { track in
                 Text(track.genre).foregroundStyle(rowTextColor(track)).lineLimit(1)
+                .padding(.horizontal, 10)
             }
             .width(min: 70, ideal: 100)
         } else if library.orderedVisibleColumns.indices.contains(11), library.orderedVisibleColumns[11] == .year {
             TableColumn("Year", value: \.yearSortKey) { track in
                 Text(track.year.map(String.init) ?? "").foregroundStyle(rowTextColor(track))
+                .padding(.horizontal, 10)
             }
-            .width(46)
+            .width(min: 50, ideal: 60, max: 90)
         } else if library.orderedVisibleColumns.indices.contains(11), library.orderedVisibleColumns[11] == .trackNumber {
             TableColumn("Track #", value: \.trackNumberSortKey) { track in
                 Text(track.trackNumber.map(String.init) ?? "").foregroundStyle(rowTextColor(track))
+                .padding(.horizontal, 10)
             }
-            .width(50)
+            .width(min: 40, ideal: 50, max: 90)
         } else if library.orderedVisibleColumns.indices.contains(11), library.orderedVisibleColumns[11] == .discNumber {
             TableColumn("Disc #", value: \.discNumberSortKey) { track in
                 Text(track.discNumber.map(String.init) ?? "").foregroundStyle(rowTextColor(track))
+                .padding(.horizontal, 10)
             }
-            .width(50)
+            .width(min: 40, ideal: 50, max: 90)
         } else if library.orderedVisibleColumns.indices.contains(11), library.orderedVisibleColumns[11] == .bpm {
             TableColumn("BPM", value: \.bpmSortKey) { track in
                 Text(track.bpm.map(String.init) ?? "").foregroundStyle(rowTextColor(track))
+                .padding(.horizontal, 10)
             }
-            .width(46)
+            .width(min: 40, ideal: 46, max: 80)
         } else if library.orderedVisibleColumns.indices.contains(11), library.orderedVisibleColumns[11] == .key {
             TableColumn("Key", value: \.keySortKey) { track in
                 Text(track.key ?? "").foregroundStyle(rowTextColor(track))
+                .padding(.horizontal, 10)
             }
-            .width(46)
+            .width(min: 40, ideal: 46, max: 80)
         } else if library.orderedVisibleColumns.indices.contains(11), library.orderedVisibleColumns[11] == .comments {
             TableColumn("Comments", value: \.commentsSortKey) { track in
                 Text(track.comments ?? "").foregroundStyle(rowTextColor(track)).lineLimit(1)
+                .padding(.horizontal, 10)
             }
             .width(min: 100, ideal: 160)
         } else if library.orderedVisibleColumns.indices.contains(11), library.orderedVisibleColumns[11] == .plays {
             TableColumn("Plays", value: \.playCount) { track in
                 Text(track.playCount > 0 ? String(format: "%.1f", track.playCount) : "–").foregroundStyle(rowTextColor(track)).monospacedDigit()
+                .padding(.horizontal, 10)
             }
-            .width(46)
+            .width(min: 40, ideal: 46, max: 80)
         } else if library.orderedVisibleColumns.indices.contains(11), library.orderedVisibleColumns[11] == .tags {
             TableColumn("Tags", value: \.tagsSortKey) { track in
                 Text(track.tags.joined(separator: ", ")).foregroundStyle(rowTextColor(track)).lineLimit(1)
+                .padding(.horizontal, 10)
             }
             .width(min: 80, ideal: 140)
         } else if library.orderedVisibleColumns.indices.contains(11), library.orderedVisibleColumns[11] == .time {
             TableColumn("Time", value: \.duration) { track in
                 Text(track.durationString).foregroundStyle(rowTextColor(track)).monospacedDigit()
+                .padding(.horizontal, 10)
             }
-            .width(50)
+            .width(min: 40, ideal: 50, max: 90)
         } else if library.orderedVisibleColumns.indices.contains(11), library.orderedVisibleColumns[11] == .rating {
             TableColumn("Rating", value: \.rating) { track in
                 RatingCellView(
@@ -1449,6 +1622,7 @@ struct TrackListView: View {
                     ),
                     isSelected: selection.count == 1 && selection.contains(track.id)
                 )
+                .padding(.horizontal, 10)
             }
             .width(min: 110, ideal: 130)
         }
@@ -1464,68 +1638,81 @@ struct TrackListView: View {
                     .lineLimit(1)
                     .contentShape(Rectangle())
                     .modifier(ReorderModifier(track: track, playlist: activePlaylist, library: library, isDragArmed: dragArmedIDs.contains(track.id)))
+                .padding(.horizontal, 10)
             }
             .width(min: 160, ideal: 260)
         } else if library.orderedVisibleColumns.indices.contains(12), library.orderedVisibleColumns[12] == .artist {
             TableColumn("Artist", value: \.artist) { track in
                 Text(track.artist).foregroundStyle(rowTextColor(track)).lineLimit(1)
+                .padding(.horizontal, 10)
             }
             .width(min: 100, ideal: 160)
         } else if library.orderedVisibleColumns.indices.contains(12), library.orderedVisibleColumns[12] == .album {
             TableColumn("Album", value: \.album) { track in
                 Text(track.album).foregroundStyle(rowTextColor(track)).lineLimit(1)
+                .padding(.horizontal, 10)
             }
             .width(min: 100, ideal: 180)
         } else if library.orderedVisibleColumns.indices.contains(12), library.orderedVisibleColumns[12] == .genre {
             TableColumn("Genre", value: \.genre) { track in
                 Text(track.genre).foregroundStyle(rowTextColor(track)).lineLimit(1)
+                .padding(.horizontal, 10)
             }
             .width(min: 70, ideal: 100)
         } else if library.orderedVisibleColumns.indices.contains(12), library.orderedVisibleColumns[12] == .year {
             TableColumn("Year", value: \.yearSortKey) { track in
                 Text(track.year.map(String.init) ?? "").foregroundStyle(rowTextColor(track))
+                .padding(.horizontal, 10)
             }
-            .width(46)
+            .width(min: 50, ideal: 60, max: 90)
         } else if library.orderedVisibleColumns.indices.contains(12), library.orderedVisibleColumns[12] == .trackNumber {
             TableColumn("Track #", value: \.trackNumberSortKey) { track in
                 Text(track.trackNumber.map(String.init) ?? "").foregroundStyle(rowTextColor(track))
+                .padding(.horizontal, 10)
             }
-            .width(50)
+            .width(min: 40, ideal: 50, max: 90)
         } else if library.orderedVisibleColumns.indices.contains(12), library.orderedVisibleColumns[12] == .discNumber {
             TableColumn("Disc #", value: \.discNumberSortKey) { track in
                 Text(track.discNumber.map(String.init) ?? "").foregroundStyle(rowTextColor(track))
+                .padding(.horizontal, 10)
             }
-            .width(50)
+            .width(min: 40, ideal: 50, max: 90)
         } else if library.orderedVisibleColumns.indices.contains(12), library.orderedVisibleColumns[12] == .bpm {
             TableColumn("BPM", value: \.bpmSortKey) { track in
                 Text(track.bpm.map(String.init) ?? "").foregroundStyle(rowTextColor(track))
+                .padding(.horizontal, 10)
             }
-            .width(46)
+            .width(min: 40, ideal: 46, max: 80)
         } else if library.orderedVisibleColumns.indices.contains(12), library.orderedVisibleColumns[12] == .key {
             TableColumn("Key", value: \.keySortKey) { track in
                 Text(track.key ?? "").foregroundStyle(rowTextColor(track))
+                .padding(.horizontal, 10)
             }
-            .width(46)
+            .width(min: 40, ideal: 46, max: 80)
         } else if library.orderedVisibleColumns.indices.contains(12), library.orderedVisibleColumns[12] == .comments {
             TableColumn("Comments", value: \.commentsSortKey) { track in
                 Text(track.comments ?? "").foregroundStyle(rowTextColor(track)).lineLimit(1)
+                .padding(.horizontal, 10)
             }
             .width(min: 100, ideal: 160)
         } else if library.orderedVisibleColumns.indices.contains(12), library.orderedVisibleColumns[12] == .plays {
             TableColumn("Plays", value: \.playCount) { track in
                 Text(track.playCount > 0 ? String(format: "%.1f", track.playCount) : "–").foregroundStyle(rowTextColor(track)).monospacedDigit()
+                .padding(.horizontal, 10)
             }
-            .width(46)
+            .width(min: 40, ideal: 46, max: 80)
         } else if library.orderedVisibleColumns.indices.contains(12), library.orderedVisibleColumns[12] == .tags {
             TableColumn("Tags", value: \.tagsSortKey) { track in
                 Text(track.tags.joined(separator: ", ")).foregroundStyle(rowTextColor(track)).lineLimit(1)
+                .padding(.horizontal, 10)
             }
             .width(min: 80, ideal: 140)
         } else if library.orderedVisibleColumns.indices.contains(12), library.orderedVisibleColumns[12] == .time {
             TableColumn("Time", value: \.duration) { track in
                 Text(track.durationString).foregroundStyle(rowTextColor(track)).monospacedDigit()
+                .padding(.horizontal, 10)
             }
-            .width(50)
+            .width(min: 40, ideal: 50, max: 90)
         } else if library.orderedVisibleColumns.indices.contains(12), library.orderedVisibleColumns[12] == .rating {
             TableColumn("Rating", value: \.rating) { track in
                 RatingCellView(
@@ -1535,6 +1722,7 @@ struct TrackListView: View {
                     ),
                     isSelected: selection.count == 1 && selection.contains(track.id)
                 )
+                .padding(.horizontal, 10)
             }
             .width(min: 110, ideal: 130)
         }
@@ -1550,68 +1738,81 @@ struct TrackListView: View {
                     .lineLimit(1)
                     .contentShape(Rectangle())
                     .modifier(ReorderModifier(track: track, playlist: activePlaylist, library: library, isDragArmed: dragArmedIDs.contains(track.id)))
+                .padding(.horizontal, 10)
             }
             .width(min: 160, ideal: 260)
         } else if library.orderedVisibleColumns.indices.contains(13), library.orderedVisibleColumns[13] == .artist {
             TableColumn("Artist", value: \.artist) { track in
                 Text(track.artist).foregroundStyle(rowTextColor(track)).lineLimit(1)
+                .padding(.horizontal, 10)
             }
             .width(min: 100, ideal: 160)
         } else if library.orderedVisibleColumns.indices.contains(13), library.orderedVisibleColumns[13] == .album {
             TableColumn("Album", value: \.album) { track in
                 Text(track.album).foregroundStyle(rowTextColor(track)).lineLimit(1)
+                .padding(.horizontal, 10)
             }
             .width(min: 100, ideal: 180)
         } else if library.orderedVisibleColumns.indices.contains(13), library.orderedVisibleColumns[13] == .genre {
             TableColumn("Genre", value: \.genre) { track in
                 Text(track.genre).foregroundStyle(rowTextColor(track)).lineLimit(1)
+                .padding(.horizontal, 10)
             }
             .width(min: 70, ideal: 100)
         } else if library.orderedVisibleColumns.indices.contains(13), library.orderedVisibleColumns[13] == .year {
             TableColumn("Year", value: \.yearSortKey) { track in
                 Text(track.year.map(String.init) ?? "").foregroundStyle(rowTextColor(track))
+                .padding(.horizontal, 10)
             }
-            .width(46)
+            .width(min: 50, ideal: 60, max: 90)
         } else if library.orderedVisibleColumns.indices.contains(13), library.orderedVisibleColumns[13] == .trackNumber {
             TableColumn("Track #", value: \.trackNumberSortKey) { track in
                 Text(track.trackNumber.map(String.init) ?? "").foregroundStyle(rowTextColor(track))
+                .padding(.horizontal, 10)
             }
-            .width(50)
+            .width(min: 40, ideal: 50, max: 90)
         } else if library.orderedVisibleColumns.indices.contains(13), library.orderedVisibleColumns[13] == .discNumber {
             TableColumn("Disc #", value: \.discNumberSortKey) { track in
                 Text(track.discNumber.map(String.init) ?? "").foregroundStyle(rowTextColor(track))
+                .padding(.horizontal, 10)
             }
-            .width(50)
+            .width(min: 40, ideal: 50, max: 90)
         } else if library.orderedVisibleColumns.indices.contains(13), library.orderedVisibleColumns[13] == .bpm {
             TableColumn("BPM", value: \.bpmSortKey) { track in
                 Text(track.bpm.map(String.init) ?? "").foregroundStyle(rowTextColor(track))
+                .padding(.horizontal, 10)
             }
-            .width(46)
+            .width(min: 40, ideal: 46, max: 80)
         } else if library.orderedVisibleColumns.indices.contains(13), library.orderedVisibleColumns[13] == .key {
             TableColumn("Key", value: \.keySortKey) { track in
                 Text(track.key ?? "").foregroundStyle(rowTextColor(track))
+                .padding(.horizontal, 10)
             }
-            .width(46)
+            .width(min: 40, ideal: 46, max: 80)
         } else if library.orderedVisibleColumns.indices.contains(13), library.orderedVisibleColumns[13] == .comments {
             TableColumn("Comments", value: \.commentsSortKey) { track in
                 Text(track.comments ?? "").foregroundStyle(rowTextColor(track)).lineLimit(1)
+                .padding(.horizontal, 10)
             }
             .width(min: 100, ideal: 160)
         } else if library.orderedVisibleColumns.indices.contains(13), library.orderedVisibleColumns[13] == .plays {
             TableColumn("Plays", value: \.playCount) { track in
                 Text(track.playCount > 0 ? String(format: "%.1f", track.playCount) : "–").foregroundStyle(rowTextColor(track)).monospacedDigit()
+                .padding(.horizontal, 10)
             }
-            .width(46)
+            .width(min: 40, ideal: 46, max: 80)
         } else if library.orderedVisibleColumns.indices.contains(13), library.orderedVisibleColumns[13] == .tags {
             TableColumn("Tags", value: \.tagsSortKey) { track in
                 Text(track.tags.joined(separator: ", ")).foregroundStyle(rowTextColor(track)).lineLimit(1)
+                .padding(.horizontal, 10)
             }
             .width(min: 80, ideal: 140)
         } else if library.orderedVisibleColumns.indices.contains(13), library.orderedVisibleColumns[13] == .time {
             TableColumn("Time", value: \.duration) { track in
                 Text(track.durationString).foregroundStyle(rowTextColor(track)).monospacedDigit()
+                .padding(.horizontal, 10)
             }
-            .width(50)
+            .width(min: 40, ideal: 50, max: 90)
         } else if library.orderedVisibleColumns.indices.contains(13), library.orderedVisibleColumns[13] == .rating {
             TableColumn("Rating", value: \.rating) { track in
                 RatingCellView(
@@ -1621,6 +1822,7 @@ struct TrackListView: View {
                     ),
                     isSelected: selection.count == 1 && selection.contains(track.id)
                 )
+                .padding(.horizontal, 10)
             }
             .width(min: 110, ideal: 130)
         }

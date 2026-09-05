@@ -62,6 +62,12 @@ struct SidebarNowPlayingArt: View {
                                 library.unhideAllTracks(inAlbum: album)
                             }
                         }
+                        if let album = displayTrack?.album {
+                            Toggle("Incomplete Rating", isOn: Binding(
+                                get: { library.incompleteRatingAlbums.contains(album) },
+                                set: { _ in library.toggleIncompleteRating(forAlbum: album) }
+                            ))
+                        }
                     }
                     if let browsedAlbum {
                         Divider()

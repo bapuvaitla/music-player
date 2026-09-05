@@ -1,8 +1,34 @@
 import SwiftUI
+import AppKit
 import MusicPlayerKit
+
+/// Flushes the currently-playing track's fractional play to disk before the
+/// process exits. `recordPartialPlay` normally fires an unstructured `Task`
+/// that AppKit is free to tear down mid-write when the app quits — this
+/// awaits the write instead, spinning the run loop (rather than blocking the
+/// thread outright, which would deadlock a `@MainActor` continuation trying
+/// to resume on that same thread) until it lands or a safety timeout passes.
+final class AppDelegate: NSObject, NSApplicationDelegate {
+    var player: PlayerController?
+    var library: LibraryModel?
+
+    func applicationWillTerminate(_ notification: Notification) {
+        guard let player, let library, let pending = player.pendingFractionalPlay else { return }
+        var finished = false
+        Task { @MainActor in
+            await library.recordPartialPlayAndWait(pending.fraction, for: pending.track)
+            finished = true
+        }
+        let deadline = Date().addingTimeInterval(2.0)
+        while !finished && Date() < deadline {
+            RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.02))
+        }
+    }
+}
 
 @main
 struct MusicPlayerApp: App {
+    @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @StateObject private var player: PlayerController
     @StateObject private var coordinator: PlaybackCoordinator
     @StateObject private var library: LibraryModel
@@ -42,6 +68,10 @@ struct MusicPlayerApp: App {
                 .environmentObject(coordinator)
                 .environmentObject(library)
                 .frame(minWidth: 900, minHeight: 560)
+                .onAppear {
+                    appDelegate.player = player
+                    appDelegate.library = library
+                }
         }
         .windowStyle(.titleBar)
         .windowToolbarStyle(.unified)
@@ -83,8 +113,8 @@ struct MusicPlayerApp: App {
 
                 Divider()
 
-                Button("Shuffle") {
-                    coordinator.toggleShuffle()
+                Button("Cycle Shuffle Mode") {
+                    coordinator.cycleShuffleMode()
                 }
 
                 Button("Cycle Repeat Mode") {
@@ -130,6 +160,7 @@ struct MusicPlayerApp: App {
                 Button("Mini Player") {
                     openWindow(id: "miniPlayer")
                 }
+                .keyboardShortcut("m", modifiers: [.command, .shift])
             }
         }
 

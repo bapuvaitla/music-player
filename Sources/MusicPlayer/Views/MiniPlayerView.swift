@@ -39,6 +39,26 @@ struct MiniPlayerView: View {
                 }
                 .frame(maxWidth: .infinity)
 
+                if let track = player.currentTrack {
+                    // A numeric stepper, not the table's slider control —
+                    // a second slider right above the track progress bar
+                    // read as visually confusing/redundant.
+                    Stepper(
+                        value: Binding(
+                            get: { track.rating },
+                            set: { library.setRating($0, for: track) }
+                        ),
+                        in: 0...11
+                    ) {
+                        Text(track.rating == 0 ? "–" : "\(track.rating)")
+                            .font(.system(size: 12, weight: .medium, design: .rounded))
+                            .monospacedDigit()
+                            .foregroundStyle(track.rating == 0 ? Color.secondary : Color.accentColor)
+                    }
+                    .controlSize(.small)
+                    .fixedSize()
+                }
+
                 Slider(
                     value: Binding(
                         get: { isScrubbing ? scrubValue : player.currentTime },
@@ -83,6 +103,7 @@ struct MiniPlayerView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .frame(minWidth: 160, idealWidth: 190, minHeight: 260, idealHeight: 300)
+        .background(Color.appBackground)
         .background(WindowLevelController(isFloating: keepOnTop))
         .overlay(alignment: .topTrailing) {
             Button {

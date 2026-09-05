@@ -23,6 +23,12 @@ if ls "${BUILD_DIR}"/*.bundle >/dev/null 2>&1; then
     cp -R "${BUILD_DIR}"/*.bundle "${APP_DIR}/Contents/Resources/"
 fi
 
-codesign --force --deep --sign - "${APP_DIR}" >/dev/null 2>&1
+# A stable local identity, not ad-hoc (`-sign -`) — an ad-hoc signature is
+# derived from the binary's own contents, so it changes on every rebuild
+# and macOS's privacy system (mic access, etc.) sees each rebuild as a new
+# app and re-asks. This certificate is self-signed and lives only in this
+# Mac's login keychain (see the "MusicPlayerLocalDev" identity) — signing
+# with it keeps the app's identity stable across rebuilds instead.
+codesign --force --deep --sign "MusicPlayerLocalDev" "${APP_DIR}" >/dev/null 2>&1
 
 echo "Built: ${APP_DIR}"

@@ -14,6 +14,14 @@ public final class PlayerController: ObservableObject {
 
     public var onTrackFinished: (() -> Void)?
 
+    /// When set, playback jumps back to `lowerBound` once it reaches
+    /// `upperBound`, instead of continuing on — used by Learn Song to loop
+    /// a section of the song while practicing. `nil` (the default) has no
+    /// effect on normal playback. Cleared automatically whenever a new
+    /// track starts, since a loop region only makes sense for the track it
+    /// was set on.
+    public var loopRegion: ClosedRange<TimeInterval>?
+
     /// Fired whenever a track stops being current (skipped, replaced, or
     /// finished), with how much of it was actually heard, in units of "one
     /// full listen" (0...∞ — rewinding to replay a passage means real
@@ -54,6 +62,7 @@ public final class PlayerController: ObservableObject {
             duration = newPlayer.duration
             currentTime = 0
             accumulatedPlayedSeconds = 0
+            loopRegion = nil
             isPlaying = true
             startTimer()
         } catch {
@@ -118,10 +127,20 @@ public final class PlayerController: ObservableObject {
     /// replacing/clearing the current track so a skip mid-song, or the
     /// track finishing naturally, both still count.
     private func recordFractionalPlayIfNeeded() {
-        guard let track = currentTrack, duration > 0 else { return }
+        guard let pending = pendingFractionalPlay else { return }
+        onFractionalPlay?(pending.track, pending.fraction)
+    }
+
+    /// However much of the current track has been heard so far, as a
+    /// fraction of its duration — the same value `recordFractionalPlayIfNeeded`
+    /// would credit right now. Exposed read-only so app termination can
+    /// flush it through an awaited write instead of the closure-based path,
+    /// which fires an unstructured `Task` that AppKit can tear down mid-write.
+    public var pendingFractionalPlay: (track: Track, fraction: Double)? {
+        guard let track = currentTrack, duration > 0 else { return nil }
         let fraction = accumulatedPlayedSeconds / duration
-        guard fraction > 0 else { return }
-        onFractionalPlay?(track, fraction)
+        guard fraction > 0 else { return nil }
+        return (track, fraction)
     }
 
     private func startTimer() {
@@ -139,6 +158,9 @@ public final class PlayerController: ObservableObject {
                 self.currentTime = player.currentTime
                 if player.isPlaying {
                     self.accumulatedPlayedSeconds += 0.25
+                }
+                if let loopRegion = self.loopRegion, self.currentTime >= loopRegion.upperBound {
+                    self.seek(to: loopRegion.lowerBound)
                 }
             }
         }

@@ -1,17 +1,17 @@
 import SwiftUI
 import Foundation
+import AppKit
 import MusicPlayerKit
 import UniformTypeIdentifiers
 
 struct ContentView: View {
     @EnvironmentObject private var library: LibraryModel
     @EnvironmentObject private var coordinator: PlaybackCoordinator
-    @Environment(\.openWindow) private var openWindow
     @State private var showingImporter = false
     @State private var addFolderSummary: String?
+    @State private var isImportDropTargeted = false
     @State private var showingColumnsPopover = false
     @State private var showingFontPopover = false
-    @State private var isImportDropTargeted = false
     /// The selected font face's PostScript name, or "" for System Default.
     @AppStorage("appFontPostscriptName") private var appFontPostscriptName: String = ""
     @AppStorage("appFontSize") private var appFontSize: Double = 13
@@ -32,16 +32,31 @@ struct ContentView: View {
     }
 
     var body: some View {
-        VStack(spacing: 0) {
-            NowPlayingBar()
-
-            NavigationSplitView {
-                SidebarView()
-            } detail: {
+        ZStack {
+        // NowPlayingBar lives inside the detail column, not spanning the
+        // whole window above both columns — it visually "belongs" to the
+        // track list rather than sitting ambiguously above the
+        // sidebar/detail split, and the sidebar now runs the full window
+        // height instead of starting below a bar it has nothing to do
+        // with.
+        NavigationSplitView {
+            SidebarView()
+        } detail: {
+            VStack(spacing: 0) {
                 TrackListView()
+                NowPlayingBar()
             }
         }
         .environment(\.font, resolvedAppFont)
+        // Same background as NowPlayingBar right below it, so the native
+        // toolbar (icons + the window's title, which doubles as "what
+        // you're browsing") reads as one continuous header block rather
+        // than a visually separate strip. In Learn Song mode there's no
+        // sidebar showing underneath it anymore — just LearnSongView's own
+        // `appBackground` — so match that instead, or the toolbar keeps
+        // its sage-green sidebar tint sitting oddly above an unrelated page.
+        .toolbarBackground(library.learningTrack == nil ? Color.sidebarBackground : Color.appBackground, for: .windowToolbar)
+        .toolbarBackgroundVisibility(.visible, for: .windowToolbar)
         // Drag folders or audio files from Finder anywhere onto the window
         // to import them — same merge logic as the toolbar's Add Music
         // picker. A thin accent border while something's hovering makes
@@ -92,91 +107,87 @@ struct ContentView: View {
             decreaseFontSize()
         }
         .toolbar {
-            ToolbarItem(placement: .automatic) {
-                Button {
-                    showingFontPopover = true
-                } label: {
-                    Label("Font", systemImage: "textformat")
-                }
-                .help("Choose the app's font")
-                .popover(isPresented: $showingFontPopover) {
-                    FontPickerPopover(selection: $appFontPostscriptName)
-                }
-            }
-
-            ToolbarItem(placement: .automatic) {
-                Button(action: decreaseFontSize) {
-                    Label("Decrease Font Size", systemImage: "textformat.size.smaller")
-                }
-                .help("Decrease font size")
-                .disabled(appFontSize <= Self.fontSizeRange.lowerBound)
-            }
-
-            ToolbarItem(placement: .automatic) {
-                Button(action: increaseFontSize) {
-                    Label("Increase Font Size", systemImage: "textformat.size.larger")
-                }
-                .help("Increase font size")
-                .disabled(appFontSize >= Self.fontSizeRange.upperBound)
-            }
-
-            ToolbarItem(placement: .navigation) {
-                Button {
-                    showingImporter = true
-                } label: {
-                    Label("Add Music", systemImage: "folder.badge.plus")
-                }
-                .help("Add folders or individual tracks to your library")
-            }
-
-            ToolbarItem(placement: .navigation) {
-                Button {
-                    Task { await library.rescanAllFolders() }
-                } label: {
-                    Label("Rescan Library", systemImage: "arrow.clockwise")
-                }
-                .help("Re-scan every added folder for new or changed files")
-                .disabled(library.scannedFolderPaths.isEmpty)
-            }
-
-            ToolbarItem(placement: .automatic) {
-                Button {
-                    showingColumnsPopover = true
-                } label: {
-                    Label("Columns", systemImage: "line.3.horizontal")
-                        .rotationEffect(.degrees(90))
-                }
-                .help("Choose and reorder columns")
-                .popover(isPresented: $showingColumnsPopover) {
-                    ColumnsOrderPopover()
-                }
-            }
-
-            ToolbarItem(placement: .automatic) {
-                Button {
-                    openWindow(id: "miniPlayer")
-                } label: {
-                    Label("Mini Player", systemImage: "pip")
-                }
-                .help("Open the floating mini player")
-            }
-
-            if library.isScanning {
+            // Ordered left to right as: Columns, Font, Add Music, Rescan,
+            // ending just before the trailing search field — all plain
+            // `Label`s (icon-only, no custom font size) so macOS renders
+            // them at one consistent native toolbar-icon size.
+            if library.learningTrack == nil {
+                // A `.principal` item turned out to sit *alongside* the
+                // native title rather than replacing it — two copies of
+                // the same text. macOS owns that title's color; not
+                // fightable from here, so this just accepts the native
+                // black text instead of duplicating it.
                 ToolbarItem(placement: .automatic) {
-                    ProgressView()
-                        .controlSize(.small)
+                    Button {
+                        showingColumnsPopover = true
+                    } label: {
+                        Label("Columns", systemImage: "line.3.horizontal")
+                    }
+                    .help("Choose and reorder columns")
+                    .popover(isPresented: $showingColumnsPopover) {
+                        ColumnsOrderPopover()
+                    }
                 }
-            }
 
-            if let addFolderSummary {
                 ToolbarItem(placement: .automatic) {
-                    Text(addFolderSummary)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                    Menu {
+                        Button("Choose Font…") { showingFontPopover = true }
+                        Divider()
+                        Button(action: increaseFontSize) {
+                            Label("Increase Font Size", systemImage: "textformat.size.larger")
+                        }
+                        .disabled(appFontSize >= Self.fontSizeRange.upperBound)
+                        Button(action: decreaseFontSize) {
+                            Label("Decrease Font Size", systemImage: "textformat.size.smaller")
+                        }
+                        .disabled(appFontSize <= Self.fontSizeRange.lowerBound)
+                    } label: {
+                        Label("Font", systemImage: "textformat")
+                    }
+                    .help("Font settings")
+                    .popover(isPresented: $showingFontPopover) {
+                        FontPickerPopover(selection: $appFontPostscriptName)
+                    }
+                }
+
+                ToolbarItem(placement: .automatic) {
+                    Button {
+                        showingImporter = true
+                    } label: {
+                        Label("Add Music", systemImage: "folder.badge.plus")
+                    }
+                    .help("Add folders or individual tracks to your library")
+                }
+
+                ToolbarItem(placement: .automatic) {
+                    Button {
+                        Task { await library.rescanAllFolders() }
+                    } label: {
+                        Label("Rescan Library", systemImage: "arrow.clockwise")
+                    }
+                    .help("Re-scan every added folder for new or changed files")
+                    .disabled(library.scannedFolderPaths.isEmpty)
+                }
+
+                if library.isScanning {
+                    ToolbarItem(placement: .automatic) {
+                        ProgressView()
+                            .controlSize(.small)
+                    }
+                }
+
+                if let addFolderSummary {
+                    ToolbarItem(placement: .automatic) {
+                        Text(addFolderSummary)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
                 }
             }
         }
-        .searchable(text: $library.searchText, placement: .toolbar, prompt: "Search")
+        // A plain `if` around `.searchable` doesn't compile as a modifier —
+        // this is the standard way to make one conditional.
+        .modifier(ConditionalSearchable(isActive: library.learningTrack == nil, text: $library.searchText))
         .fileImporter(
             isPresented: $showingImporter,
             allowedContentTypes: [.folder, .audio],
@@ -191,12 +202,28 @@ struct ContentView: View {
             await library.loadPlaylists()
             await library.loadPlaceholderTracks()
         }
-        .background(WindowConfigurator())
+        // The native sidebar-toggle button is window-level chrome, so it
+        // stays in the title bar even while Learn Song's overlay covers the
+        // NavigationSplitView underneath — hide it there, since there's
+        // nothing visible left for it to toggle.
+        .background(WindowConfigurator(hideSidebarToggle: library.learningTrack != nil))
         .background(
             SpacebarPlayPauseMonitor {
                 coordinator.togglePlayPause(fallbackQueue: library.visibleTracks)
             }
         )
+
+        // Takes over the whole window rather than a sheet — there's a lot
+        // to show at once (tab, melody, and the song's own transport).
+        // The library view underneath stays mounted (not torn down), so
+        // scroll position/selection survive a round trip through here.
+        if let learningTrack = library.learningTrack {
+            LearnSongView(track: learningTrack)
+                .background(Color.appBackground)
+                .transition(.opacity)
+        }
+        }
+        .animation(.default, value: library.learningTrack != nil)
     }
 
     /// Shared by the toolbar's file importer, dropping files/folders onto
@@ -239,6 +266,22 @@ struct ContentView: View {
             _ = provider.loadObject(ofClass: URL.self) { url, _ in
                 continuation.resume(returning: url)
             }
+        }
+    }
+}
+
+/// Applies `.searchable` only when `isActive` — search doesn't make sense
+/// while Learn Song has taken over the window, so it disappears from the
+/// toolbar there entirely rather than sitting there unused.
+private struct ConditionalSearchable: ViewModifier {
+    let isActive: Bool
+    @Binding var text: String
+
+    func body(content: Content) -> some View {
+        if isActive {
+            content.searchable(text: $text, placement: .toolbar, prompt: "Search")
+        } else {
+            content
         }
     }
 }

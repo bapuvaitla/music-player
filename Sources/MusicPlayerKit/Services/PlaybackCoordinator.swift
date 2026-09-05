@@ -4,6 +4,18 @@ public enum RepeatMode: Sendable {
     case off, all, one
 }
 
+public enum ShuffleMode: Sendable {
+    case off, random, weighted
+
+    var next: ShuffleMode {
+        switch self {
+        case .off: return .random
+        case .random: return .weighted
+        case .weighted: return .off
+        }
+    }
+}
+
 @MainActor
 public final class PlaybackCoordinator: ObservableObject {
     public let player: PlayerController
@@ -13,8 +25,10 @@ public final class PlaybackCoordinator: ObservableObject {
     /// played from, and persist across switching to a different track —
     /// only an explicit `clearUpNext()` empties it.
     @Published public private(set) var upNext: [Track] = []
-    @Published public private(set) var isShuffling: Bool = false
+    @Published public private(set) var shuffleMode: ShuffleMode = .off
     @Published public private(set) var repeatMode: RepeatMode = .off
+
+    public var isShuffling: Bool { shuffleMode != .off }
 
     /// The list you actually played from (an album, playlist, filtered
     /// view...). Advancing walks this in order, or in `shuffledOrder` when
@@ -129,9 +143,9 @@ public final class PlaybackCoordinator: ObservableObject {
 
     // MARK: - Shuffle & repeat
 
-    public func toggleShuffle() {
-        isShuffling.toggle()
-        if isShuffling {
+    public func cycleShuffleMode() {
+        shuffleMode = shuffleMode.next
+        if shuffleMode != .off {
             regenerateShuffle(keeping: player.currentTrack)
         }
     }
@@ -149,7 +163,11 @@ public final class PlaybackCoordinator: ObservableObject {
         if let current, let idx = remaining.firstIndex(of: current) {
             remaining.remove(at: idx)
         }
-        remaining.shuffle()
+        if shuffleMode == .weighted {
+            remaining = Self.weightedShuffled(remaining)
+        } else {
+            remaining.shuffle()
+        }
 
         if let current {
             shuffledOrder = [current] + remaining
@@ -158,6 +176,27 @@ public final class PlaybackCoordinator: ObservableObject {
             shuffledOrder = remaining
             currentIndex = remaining.isEmpty ? nil : 0
         }
+    }
+
+    /// A weighted random permutation — higher-rated tracks are more likely
+    /// to land earlier, but nothing is excluded and low-rated tracks can
+    /// still come up front on a given shuffle. Unrated tracks (rating 0)
+    /// get a weight of 12, higher than even an 11 rating, so freshly-added
+    /// unrated music surfaces rather than getting buried until rated.
+    ///
+    /// Uses the standard exponential-key trick for weighted sampling
+    /// without replacement (Efraimidis–Spirakis): each item gets a key of
+    /// -ln(U)/weight for a fresh uniform random U, and sorting ascending
+    /// by that key yields a weighted-random ordering in one pass.
+    private static func weightedShuffled(_ tracks: [Track]) -> [Track] {
+        tracks
+            .map { track -> (Track, Double) in
+                let weight = track.rating == 0 ? 12.0 : Double(track.rating)
+                let u = max(Double.random(in: 0..<1), .leastNonzeroMagnitude)
+                return (track, -log(u) / weight)
+            }
+            .sorted { $0.1 < $1.1 }
+            .map { $0.0 }
     }
 
     // MARK: - Manual queue
