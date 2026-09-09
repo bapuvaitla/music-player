@@ -56,6 +56,21 @@ public struct Track: Identifiable, Hashable, Sendable {
 
     public var url: URL { URL(fileURLWithPath: path) }
 
+    /// A stable identity for this track independent of where its file
+    /// lives — `path` (this app's normal identity for everything else)
+    /// is a local filesystem path, which won't match between two
+    /// machines with different folder layouts. Used only for cross-
+    /// machine sync (see `iCloudSyncService`): title/artist/album,
+    /// normalized, plus duration rounded to the nearest second (cheap
+    /// insurance against two different songs sharing a title/artist/
+    /// album, without needing to hash actual audio content).
+    public var syncFingerprint: String {
+        func normalize(_ s: String) -> String {
+            s.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        }
+        return "\(normalize(title))|\(normalize(artist))|\(normalize(album))|\(Int(duration.rounded()))"
+    }
+
     // Non-optional surrogate keys so Table can sort by these columns
     // (Optional<Int>/Optional<String> aren't Comparable).
     public var yearSortKey: Int { year ?? -1 }

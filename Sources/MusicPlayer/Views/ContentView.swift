@@ -43,7 +43,12 @@ struct ContentView: View {
             SidebarView()
         } detail: {
             VStack(spacing: 0) {
-                TrackListView()
+                // `coordinator.player` (a plain reference, not another
+                // `@EnvironmentObject` lookup) — see `TrackListView` for
+                // why it takes `player` as a plain stored property instead
+                // of observing it directly.
+                TrackListView(player: coordinator.player)
+                    .equatable()
                 NowPlayingBar()
             }
         }
@@ -112,6 +117,32 @@ struct ContentView: View {
             // `Label`s (icon-only, no custom font size) so macOS renders
             // them at one consistent native toolbar-icon size.
             if library.learningTrack == nil {
+                // `.navigation` is the native spot for back/forward
+                // controls — right next to the sidebar toggle, ahead of
+                // the title — matching Finder/Xcode's own back/forward
+                // placement rather than inventing a new one. `ControlGroup`
+                // renders the pair as one segmented control, not two
+                // separate buttons, which reads as more "native" here too.
+                ToolbarItem(placement: .navigation) {
+                    ControlGroup {
+                        Button {
+                            library.goBack()
+                        } label: {
+                            Image(systemName: "chevron.left")
+                        }
+                        .disabled(!library.canGoBack)
+                        .help("Back")
+
+                        Button {
+                            library.goForward()
+                        } label: {
+                            Image(systemName: "chevron.right")
+                        }
+                        .disabled(!library.canGoForward)
+                        .help("Forward")
+                    }
+                }
+
                 // A `.principal` item turned out to sit *alongside* the
                 // native title rather than replacing it — two copies of
                 // the same text. macOS owns that title's color; not
@@ -201,6 +232,12 @@ struct ContentView: View {
             await library.rescanAllFolders()
             await library.loadPlaylists()
             await library.loadPlaceholderTracks()
+            // After ratings/play counts are loaded, not before — a sync
+            // needs the local state to merge against.
+            await library.syncWithiCloud()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .requestSyncNow)) { _ in
+            Task { await library.syncWithiCloud() }
         }
         // The native sidebar-toggle button is window-level chrome, so it
         // stays in the title bar even while Learn Song's overlay covers the
@@ -221,6 +258,11 @@ struct ContentView: View {
             LearnSongView(track: learningTrack)
                 .background(Color.appBackground)
                 .transition(.opacity)
+                // A sibling of NavigationSplitView in this ZStack, not a
+                // descendant of it — `resolvedAppFont`'s `.environment`
+                // above only reaches the library view, so without this
+                // Learn Song ignored the user's chosen app font entirely.
+                .environment(\.font, resolvedAppFont)
         }
         }
         .animation(.default, value: library.learningTrack != nil)

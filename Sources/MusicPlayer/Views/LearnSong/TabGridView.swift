@@ -17,8 +17,30 @@ struct TabGridView: View {
     var evaluation: PerformanceEvaluator.Result?
 
     /// User-adjustable zoom, applied on top of `baseSecondsPerPixel` —
-    /// "control zoom to control bar size."
+    /// "control zoom to control bar size." Smoothly adjustable two ways:
+    /// the +/- buttons animate to their new value, and a trackpad pinch
+    /// (`magnifyGesture`) tracks continuously.
     @State private var zoomScale: CGFloat = 1.0
+    /// `zoomScale` as of the start of the current pinch gesture — pinch
+    /// magnification is relative ("1.2x bigger than when you started
+    /// pinching"), not absolute, so this is the baseline each new gesture
+    /// scales from.
+    @State private var zoomAtGestureStart: CGFloat = 1.0
+    private static let zoomRange: ClosedRange<CGFloat> = 0.5...2.5
+
+    private func clampZoom(_ value: CGFloat) -> CGFloat {
+        min(Self.zoomRange.upperBound, max(Self.zoomRange.lowerBound, value))
+    }
+
+    private var magnifyGesture: some Gesture {
+        MagnificationGesture()
+            .onChanged { value in
+                zoomScale = clampZoom(zoomAtGestureStart * value)
+            }
+            .onEnded { _ in
+                zoomAtGestureStart = zoomScale
+            }
+    }
     // 195, not 130 — at 100% zoom this puts ~4 bars on a line on a
     // typical laptop-width window instead of ~6, which read as too dense.
     private let basePixelsPerSecond: CGFloat = 195
@@ -89,6 +111,7 @@ struct TabGridView: View {
                 }
             }
             .frame(maxHeight: .infinity)
+            .gesture(magnifyGesture)
         }
         .frame(minHeight: 280)
     }
@@ -108,7 +131,10 @@ struct TabGridView: View {
 
             HStack(spacing: 6) {
                 Button {
-                    zoomScale = max(0.5, zoomScale - 0.25)
+                    withAnimation(.easeInOut(duration: 0.15)) {
+                        zoomScale = clampZoom(zoomScale - 0.25)
+                    }
+                    zoomAtGestureStart = zoomScale
                 } label: {
                     Image(systemName: "minus.magnifyingglass")
                 }
@@ -122,7 +148,10 @@ struct TabGridView: View {
                     .frame(width: 38)
 
                 Button {
-                    zoomScale = min(2.5, zoomScale + 0.25)
+                    withAnimation(.easeInOut(duration: 0.15)) {
+                        zoomScale = clampZoom(zoomScale + 0.25)
+                    }
+                    zoomAtGestureStart = zoomScale
                 } label: {
                     Image(systemName: "plus.magnifyingglass")
                 }

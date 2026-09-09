@@ -13,52 +13,72 @@ struct LearnSongView: View {
 
     @StateObject private var tabEngine = NotePlaybackEngine(midiProgram: 24) // nylon acoustic guitar
     @StateObject private var vocalEngine = NotePlaybackEngine(midiProgram: 0) // acoustic grand piano
+    @StateObject private var notationEngine = NotePlaybackEngine(midiProgram: 24) // nylon acoustic guitar
+    @StateObject private var fullScoreEngine = MultiTrackPlaybackEngine()
     @StateObject private var tabRecorder = AudioRecorder()
     @StateObject private var vocalRecorder = AudioRecorder()
+    @StateObject private var notationRecorder = AudioRecorder()
 
     @State private var tabSequence: NoteSequence?
     @State private var vocalSequence: NoteSequence?
+    @State private var notationSequence: NoteSequence?
     @State private var tabFilePath: String?
     @State private var vocalFilePath: String?
+    @State private var notationFilePath: String?
+    @State private var fullScoreFilePath: String?
+    /// Set alongside `fullScoreEngine`'s loaded tracks — `FullScoreView`
+    /// needs each part's name/tab-ness for its per-part toggle row.
+    @State private var fullScoreParts: [MusicXMLParser.MusicXMLPart] = []
+    /// Raw MusicXML bytes for whichever panes render via `NotationScoreView`
+    /// (Vocal Melody, Guitar Notation) plus the full-score landing screen —
+    /// OpenSheetMusicDisplay parses the file itself rather than consuming
+    /// this app's own `NoteSequence`.
+    @State private var vocalRawData: Data?
+    @State private var notationRawData: Data?
+    @State private var fullScoreRawData: Data?
     @State private var loopRegion: ClosedRange<TimeInterval>?
     @State private var tabEvaluation: PerformanceEvaluator.Result?
     @State private var vocalEvaluation: PerformanceEvaluator.Result?
+    @State private var notationEvaluation: PerformanceEvaluator.Result?
 
     @State private var importErrorMessage: String?
     @State private var showingTuner = false
-    /// Which of tab/vocal is currently shown, filling the window — rather
-    /// than the two side by side, which left both cramped.
-    @State private var practiceTarget: PracticeTarget = .tab
+    /// Which of the three staves is currently shown filling the window, or
+    /// the full-score landing screen if none has been picked yet. See
+    /// `PracticeSelection` (declared alongside `FullScoreView`, which also
+    /// needs to name it).
+    @State private var practiceSelection: PracticeSelection = .fullScore
 
-    private enum PracticeTarget: Hashable {
-        case tab, vocal
+    private enum ImportKind {
+        case tab, vocal, notation, fullScore
     }
 
     var body: some View {
         VStack(spacing: 16) {
             header
-
-            Picker("", selection: $practiceTarget) {
-                Text("Guitar Tab").tag(PracticeTarget.tab)
-                Text("Vocal Melody").tag(PracticeTarget.vocal)
-            }
-            .pickerStyle(.segmented)
-            .labelsHidden()
-            .controlSize(.large)
-            .frame(maxWidth: 320)
+            staveSwitcher
 
             Group {
-                if practiceTarget == .tab {
-                    pane(title: "Guitar Tab", sequence: tabSequence, filePath: tabFilePath, engine: tabEngine, recorder: tabRecorder, isVocal: false, evaluation: $tabEvaluation, transportLabel: "Tab", showingTuner: $showingTuner) {
-                        presentImporter(isTab: true)
+                switch practiceSelection {
+                case .fullScore:
+                    FullScoreView(musicXMLData: fullScoreRawData, parts: fullScoreParts, engine: fullScoreEngine, onImportFile: { presentImporter(kind: .fullScore) }, showingTuner: $showingTuner)
+                case .tab:
+                    pane(title: "Guitar Tab", sequence: tabSequence, filePath: tabFilePath, engine: tabEngine, recorder: tabRecorder, isVocal: false, evaluation: $tabEvaluation, showingTuner: $showingTuner) {
+                        presentImporter(kind: .tab)
                     } content: { sequence in
                         TabGridView(sequence: sequence, currentTime: tabEngine.currentTime, onSeek: { tabEngine.seek(to: $0) }, evaluation: tabEvaluation)
                     }
-                } else {
-                    pane(title: "Vocal Melody", sequence: vocalSequence, filePath: vocalFilePath, engine: vocalEngine, recorder: vocalRecorder, isVocal: true, evaluation: $vocalEvaluation, transportLabel: "Melody", showingTuner: $showingTuner) {
-                        presentImporter(isTab: false)
+                case .vocal:
+                    pane(title: "Vocal Melody", sequence: vocalSequence, filePath: vocalFilePath, engine: vocalEngine, recorder: vocalRecorder, isVocal: true, evaluation: $vocalEvaluation, showingTuner: $showingTuner) {
+                        presentImporter(kind: .vocal)
                     } content: { sequence in
-                        PitchLineView(sequence: sequence, currentTime: vocalEngine.currentTime, onSeek: { vocalEngine.seek(to: $0) }, evaluation: vocalEvaluation)
+                        NotationScoreView(sequence: sequence, currentTime: vocalEngine.currentTime, onSeek: { vocalEngine.seek(to: $0) }, evaluation: vocalEvaluation, musicXMLData: vocalRawData ?? Data())
+                    }
+                case .notation:
+                    pane(title: "Guitar Notation", sequence: notationSequence, filePath: notationFilePath, engine: notationEngine, recorder: notationRecorder, isVocal: false, evaluation: $notationEvaluation, showingTuner: $showingTuner) {
+                        presentImporter(kind: .notation)
+                    } content: { sequence in
+                        NotationScoreView(sequence: sequence, currentTime: notationEngine.currentTime, onSeek: { notationEngine.seek(to: $0) }, evaluation: notationEvaluation, musicXMLData: notationRawData ?? Data())
                     }
                 }
             }
@@ -79,10 +99,14 @@ struct LearnSongView: View {
         .navigationTitle("")
         .onAppear {
             loadSavedSession()
-            tabRecorder.prewarm()
-            vocalRecorder.prewarm()
+            prewarmCurrentRecorder()
         }
         .onChange(of: loopRegion) { _, _ in saveSession() }
+        .onChange(of: practiceSelection) { oldValue, _ in
+            pauseEngine(for: oldValue)
+            saveSession()
+            prewarmCurrentRecorder()
+        }
         .alert(
             "Couldn't Import File",
             isPresented: Binding(
@@ -116,12 +140,67 @@ struct LearnSongView: View {
         }
     }
 
+    /// All four destinations stay visible and clickable everywhere — not
+    /// just the three you're not currently on — so it doubles as an
+    /// always-present indicator of where you are, not only a way to leave.
+    private var staveSwitcher: some View {
+        HStack(spacing: 12) {
+            ForEach(PracticeSelection.allCases, id: \.self) { destination in
+                if destination == practiceSelection {
+                    Button(destination.displayName) { practiceSelection = destination }
+                        .buttonStyle(.borderedProminent)
+                } else {
+                    Button(destination.displayName) { practiceSelection = destination }
+                        .buttonStyle(.bordered)
+                }
+            }
+        }
+        .controlSize(.large)
+    }
+
     private func finishLearning() {
         tabEngine.stop()
         vocalEngine.stop()
+        notationEngine.stop()
+        fullScoreEngine.stop()
         tabRecorder.stop()
         vocalRecorder.stop()
+        notationRecorder.stop()
         library.learningTrack = nil
+    }
+
+    /// Each recorder's `prewarm()` briefly opens its own `AVAudioEngine`'s
+    /// mic input, which forces Core Audio to reconfigure the shared
+    /// hardware device (see `AudioRecorder.prewarm`'s doc comment) —
+    /// harmless once, but calling it for all three recorders back-to-back
+    /// at launch chains three of those reconfigurations in quick
+    /// succession, which was corrupting every `NotePlaybackEngine`'s
+    /// sampler output into raw beeping instead of the intended instrument
+    /// tone. Only one stave is ever practiced at a time, so only warming
+    /// up that one's recorder — on appear, and again whenever the
+    /// selected stave changes — avoids the pile-up while still avoiding
+    /// the first-take reconfiguration glitch `prewarm()` exists for.
+    private func prewarmCurrentRecorder() {
+        switch practiceSelection {
+        case .fullScore: break
+        case .tab: tabRecorder.prewarm()
+        case .vocal: vocalRecorder.prewarm()
+        case .notation: notationRecorder.prewarm()
+        }
+    }
+
+    /// Switching staves leaves the pane you left mounted-but-hidden, not
+    /// torn down (each keeps its own engine/recorder instance so its
+    /// state survives a round trip) — without this, playback started on
+    /// one stave would just keep going, unheard but still running, under
+    /// whichever one you switched to.
+    private func pauseEngine(for selection: PracticeSelection) {
+        switch selection {
+        case .fullScore: fullScoreEngine.pause()
+        case .tab: tabEngine.pause()
+        case .vocal: vocalEngine.pause()
+        case .notation: notationEngine.pause()
+        }
     }
 
     @ViewBuilder
@@ -133,12 +212,11 @@ struct LearnSongView: View {
         recorder: AudioRecorder,
         isVocal: Bool,
         evaluation: Binding<PerformanceEvaluator.Result?>,
-        transportLabel: String,
         showingTuner: Binding<Bool>,
         onImport: @escaping () -> Void,
         @ViewBuilder content: (NoteSequence) -> Content
     ) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 14) {
             // No repeated title here — the segmented picker above already
             // says "Guitar Tab" / "Vocal Melody".
             HStack {
@@ -152,8 +230,11 @@ struct LearnSongView: View {
                 // Play/rewind/volume/speed sits above the score, not
                 // below it — it's the thing you reach for constantly
                 // while following along, not an afterthought under the
-                // tab.
-                InstrumentTransportView(engine: engine, sequence: sequence, label: transportLabel, leadingInset: isVocal ? 0 : 22, showingTuner: showingTuner)
+                // tab. Given its own room above/below rather than sitting
+                // flush against the Import row and loop control, now that
+                // it's a wider, multi-cluster row in its own right.
+                InstrumentTransportView(engine: engine, sequence: sequence, leadingInset: isVocal ? 0 : 22, showingTuner: showingTuner, showsTuner: !isVocal)
+                    .padding(.vertical, 4)
                 // Keyed on the file path so replacing this pane's file
                 // gets a fresh loop control instead of reusing stale
                 // start/end values sized for the old sequence. Sits above
@@ -200,49 +281,83 @@ struct LearnSongView: View {
                 loopRegion = start...end
             }
             if let tabPath = saved.tabFilePath {
-                importFile(at: URL(fileURLWithPath: tabPath), isTab: true, persist: false)
+                importFile(at: URL(fileURLWithPath: tabPath), kind: .tab, persist: false)
             }
             if let vocalPath = saved.vocalFilePath {
-                importFile(at: URL(fileURLWithPath: vocalPath), isTab: false, persist: false)
+                importFile(at: URL(fileURLWithPath: vocalPath), kind: .vocal, persist: false)
             }
+            if let notationPath = saved.notationFilePath {
+                importFile(at: URL(fileURLWithPath: notationPath), kind: .notation, persist: false)
+            }
+            if let fullScorePath = saved.fullScoreFilePath {
+                importFile(at: URL(fileURLWithPath: fullScorePath), kind: .fullScore, persist: false)
+            }
+            // Resuming straight onto whichever stave was last being
+            // practiced, rather than back on the full-score picker every
+            // time — same "pick up where you left off" as the loop region.
+            practiceSelection = PracticeSelection(persistedValue: saved.practiceTarget)
         }
     }
 
     /// Uses `NSOpenPanel` directly rather than SwiftUI's `.fileImporter` —
     /// after two rounds of it silently failing to deliver a picked file
     /// (no error, nothing imported), driving the panel here avoids
-    /// depending on SwiftUI state timing entirely: `isTab` is captured
+    /// depending on SwiftUI state timing entirely: `kind` is captured
     /// straight into the completion closure, with nothing shared to race.
-    private func presentImporter(isTab: Bool) {
+    private func presentImporter(kind: ImportKind) {
         let panel = NSOpenPanel()
-        panel.title = isTab ? "Import Guitar Tab" : "Import Vocal Melody"
+        switch kind {
+        case .tab:
+            panel.title = "Import Guitar Tab"
+        case .vocal:
+            panel.title = "Import Vocal Melody"
+        case .notation:
+            panel.title = "Import Guitar Notation"
+        case .fullScore:
+            panel.title = "Import Full Score"
+        }
         panel.allowsMultipleSelection = false
         panel.canChooseDirectories = false
         panel.canChooseFiles = true
         panel.begin { response in
             guard response == .OK, let url = panel.url else { return }
-            importFile(at: url, isTab: isTab, persist: true)
+            importFile(at: url, kind: kind, persist: true)
         }
     }
 
-    private func importFile(at url: URL, isTab: Bool, persist: Bool) {
+    private func importFile(at url: URL, kind: ImportKind, persist: Bool) {
         // A URL handed back by a file picker may need this even in a
         // non-sandboxed app — harmless (just returns false) if it doesn't.
         let didStartAccess = url.startAccessingSecurityScopedResource()
         defer { if didStartAccess { url.stopAccessingSecurityScopedResource() } }
 
+        if kind == .fullScore {
+            importFullScore(at: url, persist: persist)
+            return
+        }
+
         do {
             let sequence = try MusicXMLParser.parse(fileAt: url)
-            if isTab {
+            switch kind {
+            case .tab:
                 tabSequence = sequence
                 tabFilePath = url.path
                 tabEngine.load(sequence)
                 tabEvaluation = nil
-            } else {
+            case .vocal:
                 vocalSequence = sequence
                 vocalFilePath = url.path
+                vocalRawData = try? Data(contentsOf: url)
                 vocalEngine.load(sequence)
                 vocalEvaluation = nil
+            case .notation:
+                notationSequence = sequence
+                notationFilePath = url.path
+                notationRawData = try? Data(contentsOf: url)
+                notationEngine.load(sequence)
+                notationEvaluation = nil
+            case .fullScore:
+                break // handled above
             }
             if persist { saveSession() }
         } catch {
@@ -255,10 +370,42 @@ struct LearnSongView: View {
         }
     }
 
+    /// The full score is a multi-part file (Voice + Guitar Notation +
+    /// Guitar Tab in one document), parsed with `parseAllParts` instead
+    /// of the single-sequence `parse` the other three kinds use — each
+    /// part becomes its own `MultiTrackPlaybackEngine` track so they can
+    /// play together (Voice + Guitar Notation, by default) without
+    /// Guitar Notation and Guitar Tab doubling the same line. Guitar
+    /// parts get the nylon-guitar patch, everything else the neutral
+    /// piano patch already used for `vocalEngine`.
+    private func importFullScore(at url: URL, persist: Bool) {
+        do {
+            let parts = try MusicXMLParser.parseAllParts(fileAt: url)
+            fullScoreFilePath = url.path
+            fullScoreRawData = try? Data(contentsOf: url)
+            fullScoreParts = parts
+            fullScoreEngine.load(parts.map { part in
+                MultiTrackPlaybackEngine.Track(
+                    name: part.name,
+                    sequence: part.sequence,
+                    midiProgram: part.isTabPart ? 24 : 0,
+                    isEnabled: !part.isTabPart
+                )
+            })
+            if persist { saveSession() }
+        } catch {
+            guard persist else { return }
+            importErrorMessage = "Couldn't read \u{201C}\(url.lastPathComponent)\u{201D} as MusicXML (\(error.localizedDescription)). Make sure it's exported as uncompressed MusicXML (.musicxml/.xml), not the compressed .mxl variant."
+        }
+    }
+
     private func saveSession() {
         let data = LearnSessionData(
             tabFilePath: tabFilePath,
             vocalFilePath: vocalFilePath,
+            notationFilePath: notationFilePath,
+            fullScoreFilePath: fullScoreFilePath,
+            practiceTarget: practiceSelection.persistedValue,
             loopStart: loopRegion?.lowerBound,
             loopEnd: loopRegion?.upperBound
         )

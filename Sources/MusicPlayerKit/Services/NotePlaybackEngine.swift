@@ -62,24 +62,31 @@ public final class NotePlaybackEngine: ObservableObject {
         fileURLWithPath: "/System/Library/Components/CoreAudio.component/Contents/Resources/gs_instruments.dls"
     )
 
+    private let midiProgram: UInt8
+    /// `loadSoundBankInstrument` is deferred to the engine's first actual
+    /// start (see `startEngine()`) rather than called here in `init()` —
+    /// calling it against a sampler whose `AVAudioEngine` has never
+    /// started left the sampler in a bad state that produced raw beeping
+    /// instead of the loaded instrument's tone, even once the engine
+    /// started later. This flag makes sure it only runs once per engine,
+    /// not on every `play()`.
+    private var hasLoadedInstrument = false
+
     /// General MIDI program number — 24 = nylon acoustic guitar (the
     /// default, for tab playback), 0 = acoustic grand piano (a clear,
     /// neutral choice for following a vocal melody line).
     public init(midiProgram: UInt8 = 24) {
+        self.midiProgram = midiProgram
         engine.attach(sampler)
         engine.connect(sampler, to: engine.mainMixerNode, format: nil)
         engine.mainMixerNode.outputVolume = volume
-        startEngine()
-        do {
-            try sampler.loadSoundBankInstrument(
-                at: Self.systemSoundBankURL,
-                program: midiProgram,
-                bankMSB: UInt8(kAUSampler_DefaultMelodicBankMSB),
-                bankLSB: UInt8(kAUSampler_DefaultBankLSB)
-            )
-        } catch {
-            print("NotePlaybackEngine: failed to load instrument: \(error)")
-        }
+        // Neither the engine nor the instrument load happens here —
+        // `LearnSongView` creates one of these per stave (tab/vocal/
+        // notation) up front regardless of which one is actually being
+        // practiced, and three simultaneous `AVAudioEngine`s each racing
+        // to start against the same shared hardware output at launch was
+        // corrupting every sampler's output. Both are deferred to the
+        // engine that's actually asked to `play()`, in `startEngine()`.
         observeConfigurationChanges()
     }
 
@@ -99,6 +106,23 @@ public final class NotePlaybackEngine: ObservableObject {
             try engine.start()
         } catch {
             print("NotePlaybackEngine: failed to start audio engine: \(error)")
+        }
+        // Loading the instrument only after the engine has actually
+        // started — doing this in `init()` before any engine of this
+        // sampler had ever run was the root cause of the beeping-instead-
+        // of-instrument-tone bug.
+        if !hasLoadedInstrument {
+            do {
+                try sampler.loadSoundBankInstrument(
+                    at: Self.systemSoundBankURL,
+                    program: midiProgram,
+                    bankMSB: UInt8(kAUSampler_DefaultMelodicBankMSB),
+                    bankLSB: UInt8(kAUSampler_DefaultBankLSB)
+                )
+                hasLoadedInstrument = true
+            } catch {
+                print("NotePlaybackEngine: failed to load instrument: \(error)")
+            }
         }
     }
 
@@ -129,6 +153,7 @@ public final class NotePlaybackEngine: ObservableObject {
 
     public func play() {
         guard !isPlaying, !sequence.notes.isEmpty else { return }
+        if !engine.isRunning { startEngine() }
         isPlaying = true
         schedule(from: pausedAt)
         startWallClock = Date().addingTimeInterval(-pausedAt / playbackRate)

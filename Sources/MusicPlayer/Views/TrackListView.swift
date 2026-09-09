@@ -1,16 +1,80 @@
 import SwiftUI
 import AppKit
+import Combine
 import MusicPlayerKit
 
-struct TrackListView: View {
+/// `Equatable`, with `.equatable()` applied at the call site in
+/// `ContentView` — the real fix for the recurring "All Tracks" slowdown
+/// (and very likely the intermittent double-click-doesn't-register issue
+/// too). Diagnostic logging proved the previous two fixes wrong about the
+/// actual cause: `ContentView.body` itself was re-evaluating on the same
+/// ~0.22–0.25s cadence as `NowPlayingBar`'s legitimate `currentTime`
+/// updates, even though `ContentView` never reads `player` directly —
+/// `NowPlayingBar` and `TrackListView` are siblings inside the same
+/// `VStack` in `ContentView`'s `detail` closure, and SwiftUI doesn't
+/// guarantee it can skip reconstructing an unchanged sibling's `body` just
+/// because *that* sibling's own inputs didn't change; by default it's
+/// only willing to skip a subtree if the view itself says it's safe to,
+/// via `Equatable`. That meant this view's full library re-filter/re-sort
+/// and `Table` rebuild were happening every single time `NowPlayingBar`
+/// legitimately needed to update its scrubber — continuously, the entire
+/// time anything played — a plausible source of both the rendering
+/// backlog behind "All Tracks" and of AppKit occasionally dropping a
+/// click/double-click that landed mid-rebuild. `player` is always the
+/// same instance for the app's lifetime, so comparing by reference makes
+/// this always report "unchanged" to a parent re-render, while this
+/// view's own `@State`/`@StateObject`/`@EnvironmentObject` reads still
+/// drive updates normally — `.equatable()` only short-circuits
+/// reconstruction triggered *from the parent*, not this view's own
+/// reactivity.
+struct TrackListView: View, Equatable {
+    // `nonisolated`: comparing two references with `===` never touches
+    // either `PlayerController`'s actor-isolated members, so this is safe
+    // to satisfy `Equatable`'s nonisolated requirement directly.
+    nonisolated static func == (lhs: TrackListView, rhs: TrackListView) -> Bool {
+        lhs.player === rhs.player
+    }
+
     @EnvironmentObject private var library: LibraryModel
-    @EnvironmentObject private var player: PlayerController
     @EnvironmentObject private var coordinator: PlaybackCoordinator
+    /// Deliberately *not* `@EnvironmentObject` — see `nowPlaying` just
+    /// below for why.
+    let player: PlayerController
+
+    /// Mirrors `player.currentTrack?.id`/`player.isPlaying`, but only ever
+    /// updates when one of *those* actually changes — not on every
+    /// `currentTime` tick. `player` publishes `currentTime` on a ~0.25s
+    /// timer while anything plays; holding `player` as `@EnvironmentObject`
+    /// (as this used to) makes SwiftUI treat this whole view as a
+    /// subscriber to *all* of its published changes, so every tick was
+    /// re-running this view's `body` — including a full re-filter/re-sort
+    /// of the entire library and a full `Table` rebuild — 4x/second,
+    /// continuously, the whole time anything was playing.
+    ///
+    /// A `@StateObject`, not a `.onReceive` built from an inline Combine
+    /// pipeline — the pipeline (`.map.combineLatest(...)`) was being
+    /// reconstructed as a *new* publisher instance on every `body`
+    /// evaluation, and `.onReceive` re-subscribing to a fresh publisher
+    /// each time is exactly the kind of thing that can leave stale
+    /// subscriptions live instead of cleanly replacing them — a plausible
+    /// explanation for why the slowdown came back intermittently rather
+    /// than staying fixed. `NowPlayingObserver` sets up its one Combine
+    /// subscription exactly once, in `init`, and `@StateObject` guarantees
+    /// this view keeps the same instance across every re-render.
+    @StateObject private var nowPlaying: NowPlayingObserver
+
+    init(player: PlayerController) {
+        self.player = player
+        _nowPlaying = StateObject(wrappedValue: NowPlayingObserver(player: player))
+    }
 
     @State private var selection: Set<Track.ID> = []
-    @State private var sortOrder: [KeyPathComparator<Track>] = [
-        KeyPathComparator(\.title, order: .forward)
-    ]
+    // Grouped by album (with each album's own tracks in track-number
+    // order — see `sortedTracks`), not flat alphabetical by title — reads
+    // far better as a default for browsing a whole library. Still just a
+    // default: clicking "Title" (or any other header) overrides it exactly
+    // like it always could.
+    @State private var sortOrder: [KeyPathComparator<Track>] = Self.albumColumnOrder
     @State private var editingSelection: EditingSelection?
     @State private var locateRowIndex: Int?
     @State private var locateTrigger = 0
@@ -80,6 +144,13 @@ struct TrackListView: View {
         KeyPathComparator(\.trackNumberSortKey, order: .forward)
     ]
 
+    /// What clicking the "Album" header alone sets `sortOrder` to —
+    /// compared against below so a plain album sort can get a meaningful
+    /// within-album order without touching any other sort mode.
+    private static let albumColumnOrder: [KeyPathComparator<Track>] = [
+        KeyPathComparator(\.album, order: .forward)
+    ]
+
     private var sortedTracks: [Track] {
         let base = library.filteredTracks.sorted(using: sortOrder)
         // Album-rank grouping is a default view, not a lock — clicking any
@@ -90,14 +161,30 @@ struct TrackListView: View {
         // grouped by album). Comparing sortOrder against the exact default
         // this mode sets is how a header click is detected: any other
         // value means the user chose it, so grouping steps aside.
-        guard isAllTracksView, albumsSortedByRating, sortOrder == Self.albumGroupingDefaultOrder else {
-            return base
+        if isAllTracksView, albumsSortedByRating, sortOrder == Self.albumGroupingDefaultOrder {
+            let rank = albumRatingRank
+            return base.sorted { lhs, rhs in
+                (rank[lhs.album] ?? Int.max) < (rank[rhs.album] ?? Int.max)
+            }
         }
 
-        let rank = albumRatingRank
-        return base.sorted { lhs, rhs in
-            (rank[lhs.album] ?? Int.max) < (rank[rhs.album] ?? Int.max)
+        // A plain click on "Album" only has one sort key, so ties (every
+        // track in the same album) fall back to whatever order the
+        // library happened to already be in — not necessarily the album's
+        // own track order. This second, stable pass leaves the album-to-
+        // album ordering `base` already established alone and only
+        // refines *within* each album by disc/track number.
+        if sortOrder == Self.albumColumnOrder {
+            return base.sorted { lhs, rhs in
+                guard lhs.album == rhs.album else { return false }
+                if lhs.discNumberSortKey != rhs.discNumberSortKey {
+                    return lhs.discNumberSortKey < rhs.discNumberSortKey
+                }
+                return lhs.trackNumberSortKey < rhs.trackNumberSortKey
+            }
         }
+
+        return base
     }
 
     private var activePlaylist: Playlist? {
@@ -129,17 +216,25 @@ struct TrackListView: View {
                 }
             }
         }
+        .onAppear {
+            // Same default `.onChange(of: library.selectedAlbums)` below
+            // applies on a click — but `.onChange` only fires on a
+            // *transition*, so a launch that restores an already-selected
+            // album from last session (see `LibraryModel`'s persisted
+            // `selectedAlbums`) wouldn't otherwise get disc/track order
+            // until you re-clicked it. A manual header-click sort still
+            // wins from here on, same as after any other album click,
+            // since nothing re-fires this once the view has appeared.
+            guard !library.selectedAlbums.isEmpty else { return }
+            sortOrder = Self.albumGroupingDefaultOrder
+        }
         .onChange(of: library.selectedAlbums) { _, newValue in
             // Browsing an album reads far better in disc/track order than
             // alphabetically; you can still click a header to override it.
-            if !newValue.isEmpty {
-                sortOrder = [
-                    KeyPathComparator(\.discNumberSortKey, order: .forward),
-                    KeyPathComparator(\.trackNumberSortKey, order: .forward)
-                ]
-            } else {
-                sortOrder = [KeyPathComparator(\.title, order: .forward)]
-            }
+            // Leaving the album goes back to All Tracks' own default
+            // (grouped by album, track-number order within each), not
+            // flat alphabetical-by-title.
+            sortOrder = newValue.isEmpty ? Self.albumColumnOrder : Self.albumGroupingDefaultOrder
         }
         .onChange(of: albumsSortedByRating) { _, newValue in
             // Same idea as browsing a single album above: switching on
@@ -147,15 +242,15 @@ struct TrackListView: View {
             // tracks in disc/track order — still just a default, a header
             // click after this still wins (see sortedTracks).
             guard isAllTracksView else { return }
-            sortOrder = newValue ? Self.albumGroupingDefaultOrder : [KeyPathComparator(\.title, order: .forward)]
+            sortOrder = newValue ? Self.albumGroupingDefaultOrder : Self.albumColumnOrder
         }
     }
 
     private var table: some View {
         Table(sortedTracks, selection: $selection, sortOrder: $sortOrder) {
             TableColumn("") { track in
-                if track.id == player.currentTrack?.id {
-                    Image(systemName: player.isPlaying ? "speaker.wave.2.fill" : "speaker.fill")
+                if track.id == nowPlaying.trackID {
+                    Image(systemName: nowPlaying.isPlaying ? "speaker.wave.2.fill" : "speaker.fill")
                         .foregroundStyle(Color.accentColor)
                         .font(.system(size: 11))
                 }
@@ -327,6 +422,22 @@ struct TrackListView: View {
             locateRowIndex = index
             locateTrigger += 1
         }
+        .onReceive(NotificationCenter.default.publisher(for: .requestGoToPlayingTrack)) { _ in
+            guard let currentTrack = player.currentTrack else { return }
+            // Always lands on the playing track's own album view — even
+            // if it's already visible right where you are (e.g. browsing
+            // All Tracks) — Cmd+P means "take me to this song's album,"
+            // not just "scroll to wherever it already is" (that's Cmd+L).
+            // `sortedTracks` is a plain computed property (not cached), so
+            // re-reading it right after changing the filters already
+            // reflects them — no need to wait for a view update.
+            library.resetAllFilters()
+            library.setAlbums([currentTrack.album])
+            guard let index = sortedTracks.firstIndex(where: { $0.id == currentTrack.id }) else { return }
+            selection = [currentTrack.id]
+            locateRowIndex = index
+            locateTrigger += 1
+        }
         .sheet(item: $editingSelection) { editing in
             TrackEditSheet(tracks: editing.tracks, navigationContext: editing.navigationContext)
         }
@@ -411,7 +522,7 @@ struct TrackListView: View {
     private func rowTextColor(_ track: Track) -> Color {
         if selection.contains(track.id) { return .white }
         if track.isPlaceholder { return .secondary }
-        return track.id == player.currentTrack?.id ? Color.appAccent : Color.primary
+        return track.id == nowPlaying.trackID ? Color.appAccent : Color.primary
     }
 
     private func copyArtwork(for track: Track) {
@@ -433,7 +544,7 @@ struct TrackListView: View {
         if library.orderedVisibleColumns.indices.contains(0), library.orderedVisibleColumns[0] == .title {
             TableColumn("Title", value: \.title) { track in
                 Text(track.title)
-                    .fontWeight(track.id == player.currentTrack?.id ? .semibold : .regular)
+                    .fontWeight(track.id == nowPlaying.trackID ? .semibold : .regular)
                     .foregroundStyle(rowTextColor(track))
                     .lineLimit(1)
                     .contentShape(Rectangle())
@@ -520,7 +631,8 @@ struct TrackListView: View {
                         get: { track.rating },
                         set: { library.setRating($0, for: track) }
                     ),
-                    isSelected: selection.count == 1 && selection.contains(track.id)
+                    isSelected: selection.count == 1 && selection.contains(track.id),
+                    showSlider: selection.count == 1 && dragArmedIDs.contains(track.id)
                 )
                 .padding(.horizontal, 10)
             }
@@ -533,7 +645,7 @@ struct TrackListView: View {
         if library.orderedVisibleColumns.indices.contains(1), library.orderedVisibleColumns[1] == .title {
             TableColumn("Title", value: \.title) { track in
                 Text(track.title)
-                    .fontWeight(track.id == player.currentTrack?.id ? .semibold : .regular)
+                    .fontWeight(track.id == nowPlaying.trackID ? .semibold : .regular)
                     .foregroundStyle(rowTextColor(track))
                     .lineLimit(1)
                     .contentShape(Rectangle())
@@ -620,7 +732,8 @@ struct TrackListView: View {
                         get: { track.rating },
                         set: { library.setRating($0, for: track) }
                     ),
-                    isSelected: selection.count == 1 && selection.contains(track.id)
+                    isSelected: selection.count == 1 && selection.contains(track.id),
+                    showSlider: selection.count == 1 && dragArmedIDs.contains(track.id)
                 )
                 .padding(.horizontal, 10)
             }
@@ -633,7 +746,7 @@ struct TrackListView: View {
         if library.orderedVisibleColumns.indices.contains(2), library.orderedVisibleColumns[2] == .title {
             TableColumn("Title", value: \.title) { track in
                 Text(track.title)
-                    .fontWeight(track.id == player.currentTrack?.id ? .semibold : .regular)
+                    .fontWeight(track.id == nowPlaying.trackID ? .semibold : .regular)
                     .foregroundStyle(rowTextColor(track))
                     .lineLimit(1)
                     .contentShape(Rectangle())
@@ -720,7 +833,8 @@ struct TrackListView: View {
                         get: { track.rating },
                         set: { library.setRating($0, for: track) }
                     ),
-                    isSelected: selection.count == 1 && selection.contains(track.id)
+                    isSelected: selection.count == 1 && selection.contains(track.id),
+                    showSlider: selection.count == 1 && dragArmedIDs.contains(track.id)
                 )
                 .padding(.horizontal, 10)
             }
@@ -733,7 +847,7 @@ struct TrackListView: View {
         if library.orderedVisibleColumns.indices.contains(3), library.orderedVisibleColumns[3] == .title {
             TableColumn("Title", value: \.title) { track in
                 Text(track.title)
-                    .fontWeight(track.id == player.currentTrack?.id ? .semibold : .regular)
+                    .fontWeight(track.id == nowPlaying.trackID ? .semibold : .regular)
                     .foregroundStyle(rowTextColor(track))
                     .lineLimit(1)
                     .contentShape(Rectangle())
@@ -820,7 +934,8 @@ struct TrackListView: View {
                         get: { track.rating },
                         set: { library.setRating($0, for: track) }
                     ),
-                    isSelected: selection.count == 1 && selection.contains(track.id)
+                    isSelected: selection.count == 1 && selection.contains(track.id),
+                    showSlider: selection.count == 1 && dragArmedIDs.contains(track.id)
                 )
                 .padding(.horizontal, 10)
             }
@@ -833,7 +948,7 @@ struct TrackListView: View {
         if library.orderedVisibleColumns.indices.contains(4), library.orderedVisibleColumns[4] == .title {
             TableColumn("Title", value: \.title) { track in
                 Text(track.title)
-                    .fontWeight(track.id == player.currentTrack?.id ? .semibold : .regular)
+                    .fontWeight(track.id == nowPlaying.trackID ? .semibold : .regular)
                     .foregroundStyle(rowTextColor(track))
                     .lineLimit(1)
                     .contentShape(Rectangle())
@@ -920,7 +1035,8 @@ struct TrackListView: View {
                         get: { track.rating },
                         set: { library.setRating($0, for: track) }
                     ),
-                    isSelected: selection.count == 1 && selection.contains(track.id)
+                    isSelected: selection.count == 1 && selection.contains(track.id),
+                    showSlider: selection.count == 1 && dragArmedIDs.contains(track.id)
                 )
                 .padding(.horizontal, 10)
             }
@@ -933,7 +1049,7 @@ struct TrackListView: View {
         if library.orderedVisibleColumns.indices.contains(5), library.orderedVisibleColumns[5] == .title {
             TableColumn("Title", value: \.title) { track in
                 Text(track.title)
-                    .fontWeight(track.id == player.currentTrack?.id ? .semibold : .regular)
+                    .fontWeight(track.id == nowPlaying.trackID ? .semibold : .regular)
                     .foregroundStyle(rowTextColor(track))
                     .lineLimit(1)
                     .contentShape(Rectangle())
@@ -1020,7 +1136,8 @@ struct TrackListView: View {
                         get: { track.rating },
                         set: { library.setRating($0, for: track) }
                     ),
-                    isSelected: selection.count == 1 && selection.contains(track.id)
+                    isSelected: selection.count == 1 && selection.contains(track.id),
+                    showSlider: selection.count == 1 && dragArmedIDs.contains(track.id)
                 )
                 .padding(.horizontal, 10)
             }
@@ -1033,7 +1150,7 @@ struct TrackListView: View {
         if library.orderedVisibleColumns.indices.contains(6), library.orderedVisibleColumns[6] == .title {
             TableColumn("Title", value: \.title) { track in
                 Text(track.title)
-                    .fontWeight(track.id == player.currentTrack?.id ? .semibold : .regular)
+                    .fontWeight(track.id == nowPlaying.trackID ? .semibold : .regular)
                     .foregroundStyle(rowTextColor(track))
                     .lineLimit(1)
                     .contentShape(Rectangle())
@@ -1120,7 +1237,8 @@ struct TrackListView: View {
                         get: { track.rating },
                         set: { library.setRating($0, for: track) }
                     ),
-                    isSelected: selection.count == 1 && selection.contains(track.id)
+                    isSelected: selection.count == 1 && selection.contains(track.id),
+                    showSlider: selection.count == 1 && dragArmedIDs.contains(track.id)
                 )
                 .padding(.horizontal, 10)
             }
@@ -1133,7 +1251,7 @@ struct TrackListView: View {
         if library.orderedVisibleColumns.indices.contains(7), library.orderedVisibleColumns[7] == .title {
             TableColumn("Title", value: \.title) { track in
                 Text(track.title)
-                    .fontWeight(track.id == player.currentTrack?.id ? .semibold : .regular)
+                    .fontWeight(track.id == nowPlaying.trackID ? .semibold : .regular)
                     .foregroundStyle(rowTextColor(track))
                     .lineLimit(1)
                     .contentShape(Rectangle())
@@ -1220,7 +1338,8 @@ struct TrackListView: View {
                         get: { track.rating },
                         set: { library.setRating($0, for: track) }
                     ),
-                    isSelected: selection.count == 1 && selection.contains(track.id)
+                    isSelected: selection.count == 1 && selection.contains(track.id),
+                    showSlider: selection.count == 1 && dragArmedIDs.contains(track.id)
                 )
                 .padding(.horizontal, 10)
             }
@@ -1233,7 +1352,7 @@ struct TrackListView: View {
         if library.orderedVisibleColumns.indices.contains(8), library.orderedVisibleColumns[8] == .title {
             TableColumn("Title", value: \.title) { track in
                 Text(track.title)
-                    .fontWeight(track.id == player.currentTrack?.id ? .semibold : .regular)
+                    .fontWeight(track.id == nowPlaying.trackID ? .semibold : .regular)
                     .foregroundStyle(rowTextColor(track))
                     .lineLimit(1)
                     .contentShape(Rectangle())
@@ -1320,7 +1439,8 @@ struct TrackListView: View {
                         get: { track.rating },
                         set: { library.setRating($0, for: track) }
                     ),
-                    isSelected: selection.count == 1 && selection.contains(track.id)
+                    isSelected: selection.count == 1 && selection.contains(track.id),
+                    showSlider: selection.count == 1 && dragArmedIDs.contains(track.id)
                 )
                 .padding(.horizontal, 10)
             }
@@ -1333,7 +1453,7 @@ struct TrackListView: View {
         if library.orderedVisibleColumns.indices.contains(9), library.orderedVisibleColumns[9] == .title {
             TableColumn("Title", value: \.title) { track in
                 Text(track.title)
-                    .fontWeight(track.id == player.currentTrack?.id ? .semibold : .regular)
+                    .fontWeight(track.id == nowPlaying.trackID ? .semibold : .regular)
                     .foregroundStyle(rowTextColor(track))
                     .lineLimit(1)
                     .contentShape(Rectangle())
@@ -1420,7 +1540,8 @@ struct TrackListView: View {
                         get: { track.rating },
                         set: { library.setRating($0, for: track) }
                     ),
-                    isSelected: selection.count == 1 && selection.contains(track.id)
+                    isSelected: selection.count == 1 && selection.contains(track.id),
+                    showSlider: selection.count == 1 && dragArmedIDs.contains(track.id)
                 )
                 .padding(.horizontal, 10)
             }
@@ -1433,7 +1554,7 @@ struct TrackListView: View {
         if library.orderedVisibleColumns.indices.contains(10), library.orderedVisibleColumns[10] == .title {
             TableColumn("Title", value: \.title) { track in
                 Text(track.title)
-                    .fontWeight(track.id == player.currentTrack?.id ? .semibold : .regular)
+                    .fontWeight(track.id == nowPlaying.trackID ? .semibold : .regular)
                     .foregroundStyle(rowTextColor(track))
                     .lineLimit(1)
                     .contentShape(Rectangle())
@@ -1520,7 +1641,8 @@ struct TrackListView: View {
                         get: { track.rating },
                         set: { library.setRating($0, for: track) }
                     ),
-                    isSelected: selection.count == 1 && selection.contains(track.id)
+                    isSelected: selection.count == 1 && selection.contains(track.id),
+                    showSlider: selection.count == 1 && dragArmedIDs.contains(track.id)
                 )
                 .padding(.horizontal, 10)
             }
@@ -1533,7 +1655,7 @@ struct TrackListView: View {
         if library.orderedVisibleColumns.indices.contains(11), library.orderedVisibleColumns[11] == .title {
             TableColumn("Title", value: \.title) { track in
                 Text(track.title)
-                    .fontWeight(track.id == player.currentTrack?.id ? .semibold : .regular)
+                    .fontWeight(track.id == nowPlaying.trackID ? .semibold : .regular)
                     .foregroundStyle(rowTextColor(track))
                     .lineLimit(1)
                     .contentShape(Rectangle())
@@ -1620,7 +1742,8 @@ struct TrackListView: View {
                         get: { track.rating },
                         set: { library.setRating($0, for: track) }
                     ),
-                    isSelected: selection.count == 1 && selection.contains(track.id)
+                    isSelected: selection.count == 1 && selection.contains(track.id),
+                    showSlider: selection.count == 1 && dragArmedIDs.contains(track.id)
                 )
                 .padding(.horizontal, 10)
             }
@@ -1633,7 +1756,7 @@ struct TrackListView: View {
         if library.orderedVisibleColumns.indices.contains(12), library.orderedVisibleColumns[12] == .title {
             TableColumn("Title", value: \.title) { track in
                 Text(track.title)
-                    .fontWeight(track.id == player.currentTrack?.id ? .semibold : .regular)
+                    .fontWeight(track.id == nowPlaying.trackID ? .semibold : .regular)
                     .foregroundStyle(rowTextColor(track))
                     .lineLimit(1)
                     .contentShape(Rectangle())
@@ -1720,7 +1843,8 @@ struct TrackListView: View {
                         get: { track.rating },
                         set: { library.setRating($0, for: track) }
                     ),
-                    isSelected: selection.count == 1 && selection.contains(track.id)
+                    isSelected: selection.count == 1 && selection.contains(track.id),
+                    showSlider: selection.count == 1 && dragArmedIDs.contains(track.id)
                 )
                 .padding(.horizontal, 10)
             }
@@ -1733,7 +1857,7 @@ struct TrackListView: View {
         if library.orderedVisibleColumns.indices.contains(13), library.orderedVisibleColumns[13] == .title {
             TableColumn("Title", value: \.title) { track in
                 Text(track.title)
-                    .fontWeight(track.id == player.currentTrack?.id ? .semibold : .regular)
+                    .fontWeight(track.id == nowPlaying.trackID ? .semibold : .regular)
                     .foregroundStyle(rowTextColor(track))
                     .lineLimit(1)
                     .contentShape(Rectangle())
@@ -1820,7 +1944,8 @@ struct TrackListView: View {
                         get: { track.rating },
                         set: { library.setRating($0, for: track) }
                     ),
-                    isSelected: selection.count == 1 && selection.contains(track.id)
+                    isSelected: selection.count == 1 && selection.contains(track.id),
+                    showSlider: selection.count == 1 && dragArmedIDs.contains(track.id)
                 )
                 .padding(.horizontal, 10)
             }
@@ -1901,5 +2026,32 @@ private struct ReorderModifier: ViewModifier {
         } else {
             return AnyView(dragSource)
         }
+    }
+}
+
+/// Watches `player.$currentTrack`/`player.$isPlaying` and republishes just
+/// the derived "which track, if any, is currently playing" identity —
+/// deliberately not `player.currentTime`, which ticks on a ~0.25s timer
+/// the whole time anything plays and has nothing to do with which row
+/// should be highlighted. `removeDuplicates()` on each upstream publisher
+/// means this only re-publishes when the *value* actually changes, not
+/// merely when `player` reassigns it (e.g. `handleFinished()` sets both
+/// `currentTrack` and `isPlaying` to their existing values in some paths).
+@MainActor
+private final class NowPlayingObserver: ObservableObject {
+    @Published private(set) var trackID: Track.ID?
+    @Published private(set) var isPlaying = false
+
+    private var cancellable: AnyCancellable?
+
+    init(player: PlayerController) {
+        cancellable = player.$currentTrack
+            .map { $0?.id }
+            .removeDuplicates()
+            .combineLatest(player.$isPlaying.removeDuplicates())
+            .sink { [weak self] trackID, isPlaying in
+                self?.trackID = trackID
+                self?.isPlaying = isPlaying
+            }
     }
 }

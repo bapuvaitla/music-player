@@ -13,8 +13,10 @@ extension Notification.Name {
     static let requestAddMusic = Notification.Name("MusicPlayer.requestAddMusic")
     static let requestEditInfo = Notification.Name("MusicPlayer.requestEditInfo")
     static let requestLocatePlayingTrack = Notification.Name("MusicPlayer.requestLocatePlayingTrack")
+    static let requestGoToPlayingTrack = Notification.Name("MusicPlayer.requestGoToPlayingTrack")
     static let requestShowColumnsPopover = Notification.Name("MusicPlayer.requestShowColumnsPopover")
     static let requestShowFontPopover = Notification.Name("MusicPlayer.requestShowFontPopover")
     static let requestIncreaseFontSize = Notification.Name("MusicPlayer.requestIncreaseFontSize")
     static let requestDecreaseFontSize = Notification.Name("MusicPlayer.requestDecreaseFontSize")
+    static let requestSyncNow = Notification.Name("MusicPlayer.requestSyncNow")
 }

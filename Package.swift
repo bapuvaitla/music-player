@@ -20,7 +20,8 @@ let package = Package(
         .executableTarget(
             name: "MusicPlayer",
             dependencies: ["MusicPlayerKit"],
-            path: "Sources/MusicPlayer"
+            path: "Sources/MusicPlayer",
+            resources: [.copy("Resources/OSMDAssets")]
         ),
         .executableTarget(
             name: "ScanTest",

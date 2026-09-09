@@ -241,26 +241,31 @@ public final class LibraryModel: ObservableObject {
     /// new set should be (plain click = just this one, Cmd = toggle, Shift
     /// = range), matching standard macOS list selection conventions.
     public func setArtists(_ artists: Set<String>) {
+        recordHistoryBeforeNavigating()
         selectedPlaylistID = nil
         selectedArtists = artists
     }
 
     public func setAlbums(_ albums: Set<String>) {
+        recordHistoryBeforeNavigating()
         selectedPlaylistID = nil
         selectedAlbums = albums
     }
 
     public func setGenres(_ genres: Set<String>) {
+        recordHistoryBeforeNavigating()
         selectedPlaylistID = nil
         selectedGenres = genres
     }
 
     public func toggleUnratedOnly() {
+        recordHistoryBeforeNavigating()
         selectedPlaylistID = nil
         showUnratedOnly.toggle()
     }
 
     public func resetAllFilters() {
+        recordHistoryBeforeNavigating()
         selectedArtists.removeAll()
         selectedAlbums.removeAll()
         selectedGenres.removeAll()
@@ -270,11 +275,75 @@ public final class LibraryModel: ObservableObject {
     }
 
     public func selectPlaylist(_ id: UUID?) {
+        recordHistoryBeforeNavigating()
         selectedPlaylistID = id
         selectedArtists.removeAll()
         selectedAlbums.removeAll()
         selectedGenres.removeAll()
         showUnratedOnly = false
+    }
+
+    // MARK: - Back/forward navigation history
+
+    /// What "a place you were browsing" means for back/forward purposes —
+    /// deliberately excludes `searchText`: that's transient typing state,
+    /// not a destination, and including it would push a new history entry
+    /// on every keystroke.
+    private struct BrowsingSnapshot: Equatable {
+        var selectedArtists: Set<String>
+        var selectedAlbums: Set<String>
+        var selectedGenres: Set<String>
+        var showUnratedOnly: Bool
+        var selectedPlaylistID: UUID?
+    }
+
+    private var backStack: [BrowsingSnapshot] = []
+    private var forwardStack: [BrowsingSnapshot] = []
+
+    public var canGoBack: Bool { !backStack.isEmpty }
+    public var canGoForward: Bool { !forwardStack.isEmpty }
+
+    private var currentBrowsingSnapshot: BrowsingSnapshot {
+        BrowsingSnapshot(
+            selectedArtists: selectedArtists,
+            selectedAlbums: selectedAlbums,
+            selectedGenres: selectedGenres,
+            showUnratedOnly: showUnratedOnly,
+            selectedPlaylistID: selectedPlaylistID
+        )
+    }
+
+    /// Called at the top of every navigation method, before it changes
+    /// anything — captures wherever you're standing right now as the place
+    /// `goBack()` should return to, and (standard browser behavior)
+    /// discards the forward history, since navigating anywhere new makes
+    /// the old "forward" path stale.
+    private func recordHistoryBeforeNavigating() {
+        backStack.append(currentBrowsingSnapshot)
+        forwardStack.removeAll()
+    }
+
+    /// Applies a snapshot directly (not through `setArtists`/etc.) so this
+    /// never re-triggers `recordHistoryBeforeNavigating()` — moving through
+    /// history shouldn't itself rewrite history.
+    private func applyBrowsingSnapshot(_ snapshot: BrowsingSnapshot) {
+        selectedArtists = snapshot.selectedArtists
+        selectedAlbums = snapshot.selectedAlbums
+        selectedGenres = snapshot.selectedGenres
+        showUnratedOnly = snapshot.showUnratedOnly
+        selectedPlaylistID = snapshot.selectedPlaylistID
+    }
+
+    public func goBack() {
+        guard let previous = backStack.popLast() else { return }
+        forwardStack.append(currentBrowsingSnapshot)
+        applyBrowsingSnapshot(previous)
+    }
+
+    public func goForward() {
+        guard let next = forwardStack.popLast() else { return }
+        backStack.append(currentBrowsingSnapshot)
+        applyBrowsingSnapshot(next)
     }
 
     public var currentViewTitle: String {
@@ -582,6 +651,37 @@ public final class LibraryModel: ObservableObject {
             if let comments = saved.commentsOverride, !comments.isEmpty { scanned[index].comments = comments }
         }
         return scanned
+    }
+
+    /// Re-applies whatever's currently in the store onto the *existing*
+    /// in-memory `tracks` — same per-field merge as `applyStoredRatings`,
+    /// but refreshing tracks already loaded rather than a freshly-scanned
+    /// batch. Used after `syncWithiCloud()` writes merged ratings/play
+    /// counts to the store, so the UI reflects them without a full rescan.
+    private func refreshRatingsFromStore() async {
+        let savedRatings = (try? await ratingStore.allRatings()) ?? [:]
+        for index in tracks.indices {
+            guard let saved = savedRatings[tracks[index].path] else { continue }
+            tracks[index].rating = saved.rating
+            tracks[index].playCount = saved.playCount
+        }
+    }
+
+    /// Merges ratings/play counts with whatever another machine last
+    /// synced via iCloud Drive (see `iCloudSyncService`), then refreshes
+    /// `tracks` to reflect anything that changed. A no-op (throws, caught
+    /// here) if iCloud Drive isn't available on this Mac — sync is opt-in
+    /// by having iCloud Drive enabled at all, not a hard requirement to
+    /// use the app.
+    @discardableResult
+    public func syncWithiCloud() async -> iCloudSyncService.SyncResult? {
+        guard let result = try? await iCloudSyncService.sync(tracks: tracks, store: ratingStore) else {
+            return nil
+        }
+        if result.pathsUpdatedLocally > 0 {
+            await refreshRatingsFromStore()
+        }
+        return result
     }
 
     private static func loadScannedFolderPaths() -> [String] {

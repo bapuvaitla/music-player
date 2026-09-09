@@ -199,6 +199,13 @@ check(vocalSequence.notes.allSatisfy { $0.string == nil && $0.fret == nil }, "vo
 print("PASS: MusicXML vocal parsing (rests, tempo/divisions scaling)")
 
 Task { @MainActor in
+    do {
+        try await generateFixtures(in: testDir)
+    } catch {
+        fail("failed to generate test fixtures in \(testDir.path): \(error)")
+    }
+    print("PASS: generated real audio test fixtures (m4a w/ artwork, aiff, wav, mp3, flac) under \(testDir.path)")
+
     let dbPath = NSTemporaryDirectory() + "regressiontest-\(UUID().uuidString).sqlite"
     let store = try! GRDBLocalStore(databaseURL: URL(fileURLWithPath: dbPath))
     let library = LibraryModel(ratingStore: store, playlistStore: store)
@@ -605,12 +612,16 @@ Task { @MainActor in
     library.deletePlaceholderTrack(unsavedPlaceholder)
     print("PASS: an un-saved placeholder track is never persisted")
 
-    // MARK: - Learn Song session persistence: which tab/vocal file is
-    // attached to a track, plus its loop region, round-trips through the
-    // store keyed by track path.
+    // MARK: - Learn Song session persistence: which tab/vocal/notation
+    // file is attached to a track, the full-score file, which stave was
+    // last being practiced, and the loop region — all round-trip through
+    // the store keyed by track path.
     let learnSessionData = LearnSessionData(
         tabFilePath: "/tmp/example-tab.musicxml",
         vocalFilePath: "/tmp/example-vocal.musicxml",
+        notationFilePath: "/tmp/example-notation.musicxml",
+        fullScoreFilePath: "/tmp/example-full-score.musicxml",
+        practiceTarget: "notation",
         loopStart: 12.5,
         loopEnd: 30.0
     )
@@ -618,10 +629,29 @@ Task { @MainActor in
     let reloadedSession = try? await store.learnSession(forTrackPath: m4aTrack.path)
     check(reloadedSession?.tabFilePath == learnSessionData.tabFilePath, "tab file path should round-trip")
     check(reloadedSession?.vocalFilePath == learnSessionData.vocalFilePath, "vocal file path should round-trip")
+    check(reloadedSession?.notationFilePath == learnSessionData.notationFilePath, "notation file path should round-trip")
+    check(reloadedSession?.fullScoreFilePath == learnSessionData.fullScoreFilePath, "full-score file path should round-trip")
+    check(reloadedSession?.practiceTarget == "notation", "practice target should round-trip")
     check(reloadedSession?.loopStart == 12.5 && reloadedSession?.loopEnd == 30.0, "loop region should round-trip")
     let noSession = try? await store.learnSession(forTrackPath: "/no/such/path")
     check(noSession == nil, "a track with no saved Learn Song session should return nil")
-    print("PASS: Learn Song session persistence (tab/vocal file paths + loop region)")
+
+    // An "old-shape" session (as if saved before notation/full-score/
+    // practice-target existed) should still load cleanly with those
+    // fields nil — the regression guard for the existing two-file flow.
+    let oldShapeSessionData = LearnSessionData(
+        tabFilePath: "/tmp/example-tab.musicxml",
+        vocalFilePath: "/tmp/example-vocal.musicxml",
+        loopStart: 5.0,
+        loopEnd: 15.0
+    )
+    try? await store.saveLearnSession(oldShapeSessionData, forTrackPath: flacTrack.path)
+    let reloadedOldShapeSession = try? await store.learnSession(forTrackPath: flacTrack.path)
+    check(reloadedOldShapeSession?.tabFilePath == oldShapeSessionData.tabFilePath, "old-shape session's tab file path should still round-trip")
+    check(reloadedOldShapeSession?.notationFilePath == nil, "old-shape session should load with no notation file path")
+    check(reloadedOldShapeSession?.fullScoreFilePath == nil, "old-shape session should load with no full-score file path")
+    check(reloadedOldShapeSession?.practiceTarget == nil, "old-shape session should load with no practice target")
+    print("PASS: Learn Song session persistence (tab/vocal/notation file paths, full-score file, practice target, loop region)")
 
     // MARK: - PerformanceEvaluator (Learn Song): verifies a recorded
     // performance against known expected notes using synthetic sine +
@@ -733,6 +763,48 @@ Task { @MainActor in
     let tunerSilence = [Float](repeating: 0, count: Int(0.3 * tunerSampleRate))
     check(TunerEngine.detectPitch(samples: tunerSilence, sampleRate: tunerSampleRate) == nil, "silence should not report a pitch")
     print("PASS: TunerEngine reports no pitch on silence")
+
+    // MARK: - iCloudSyncService: two "machines" (separate stores, separate
+    // paths for the same song) merging ratings/play counts through a
+    // shared scratch JSON file standing in for the real iCloud Drive
+    // location — proves fingerprint-based matching (not path-based) works
+    // across machines with different folder layouts.
+    let syncFileURL = URL(fileURLWithPath: NSTemporaryDirectory() + "regressiontest-sync-\(UUID().uuidString).json")
+    let machineATrack = Track(path: "/machineA/Music/song.m4a", title: "Sync Song", artist: "Sync Artist", album: "Sync Album", genre: "Rock", duration: 180)
+    let machineBTrack = Track(path: "/machineB/Music/song.m4a", title: "Sync Song", artist: "Sync Artist", album: "Sync Album", genre: "Rock", duration: 180)
+    check(machineATrack.syncFingerprint == machineBTrack.syncFingerprint, "the same song at two different local paths should share a fingerprint")
+
+    let machineAStore = InMemoryLocalStore()
+    try? await machineAStore.setRating(9, forPath: machineATrack.path)
+    try? await machineAStore.addPartialPlay(3.0, forPath: machineATrack.path)
+    _ = try? await iCloudSyncService.sync(tracks: [machineATrack], store: machineAStore, fileURL: syncFileURL)
+
+    let machineBStore = InMemoryLocalStore()
+    _ = try? await iCloudSyncService.sync(tracks: [machineBTrack], store: machineBStore, fileURL: syncFileURL)
+    let machineBAfterFirstSync = (try? await machineBStore.allRatings())?[machineBTrack.path]
+    check(machineBAfterFirstSync?.rating == 9, "machine B should pick up machine A's rating via fingerprint match, got \(String(describing: machineBAfterFirstSync?.rating))")
+    check(machineBAfterFirstSync?.playCount == 3.0, "machine B should pick up machine A's play count, got \(String(describing: machineBAfterFirstSync?.playCount))")
+    print("PASS: iCloudSyncService matches tracks across machines by fingerprint, not path")
+
+    try? await machineAStore.addPartialPlay(2.0, forPath: machineATrack.path) // A: 3.0 -> 5.0
+    _ = try? await iCloudSyncService.sync(tracks: [machineATrack], store: machineAStore, fileURL: syncFileURL)
+    _ = try? await iCloudSyncService.sync(tracks: [machineBTrack], store: machineBStore, fileURL: syncFileURL)
+    let machineBAfterPlayMerge = (try? await machineBStore.allRatings())?[machineBTrack.path]
+    check(machineBAfterPlayMerge?.playCount == 5.0, "play counts should merge by taking the max across machines, got \(String(describing: machineBAfterPlayMerge?.playCount))")
+    print("PASS: iCloudSyncService merges play counts by max, never losing a play")
+
+    // A small real delay, not just a later statement — otherwise A's and
+    // B's `setRating` calls can land within the same clock tick and the
+    // "more recent" comparison has nothing genuine to go on.
+    try? await Task.sleep(nanoseconds: 10_000_000)
+    try? await machineBStore.setRating(5, forPath: machineBTrack.path) // B rates it differently, more recently
+    _ = try? await iCloudSyncService.sync(tracks: [machineBTrack], store: machineBStore, fileURL: syncFileURL)
+    _ = try? await iCloudSyncService.sync(tracks: [machineATrack], store: machineAStore, fileURL: syncFileURL)
+    let machineAAfterRatingConflict = (try? await machineAStore.allRatings())?[machineATrack.path]
+    check(machineAAfterRatingConflict?.rating == 5, "the more recently-set rating should win on the next sync, got \(String(describing: machineAAfterRatingConflict?.rating))")
+    print("PASS: iCloudSyncService resolves a rating conflict via last-write-wins")
+
+    try? FileManager.default.removeItem(at: syncFileURL)
 
     // MARK: - Media key controller: construct it, play a track with
     // embedded artwork, and drive the artwork-loading + state-change paths

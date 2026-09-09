@@ -94,6 +94,13 @@ struct MusicPlayerApp: App {
                     Task { await library.rescanAllFolders() }
                 }
                 .disabled(library.scannedFolderPaths.isEmpty)
+
+                Divider()
+
+                Button("Sync Ratings & Plays via iCloud") {
+                    NotificationCenter.default.post(name: .requestSyncNow, object: nil)
+                }
+                .disabled(!iCloudSyncService.isAvailable)
             }
 
             CommandMenu("Playback") {
@@ -132,6 +139,11 @@ struct MusicPlayerApp: App {
                     NotificationCenter.default.post(name: .requestLocatePlayingTrack, object: nil)
                 }
                 .keyboardShortcut("l", modifiers: [.command])
+
+                Button("Go to Playing Song") {
+                    NotificationCenter.default.post(name: .requestGoToPlayingTrack, object: nil)
+                }
+                .keyboardShortcut("p", modifiers: [.command])
             }
 
             CommandMenu("View") {
@@ -154,6 +166,20 @@ struct MusicPlayerApp: App {
                     NotificationCenter.default.post(name: .requestDecreaseFontSize, object: nil)
                 }
                 .keyboardShortcut("-", modifiers: [.command])
+
+                Divider()
+
+                Button("Go Back") {
+                    library.goBack()
+                }
+                .keyboardShortcut("[", modifiers: [.command])
+                .disabled(!library.canGoBack)
+
+                Button("Go Forward") {
+                    library.goForward()
+                }
+                .keyboardShortcut("]", modifiers: [.command])
+                .disabled(!library.canGoForward)
             }
 
             CommandGroup(after: .windowArrangement) {

@@ -52,26 +52,26 @@ struct RecordEvaluateControl: View {
 
     var body: some View {
         HStack(spacing: 12) {
-            Button(isRecordingSession ? "Stop" : "Play Along…") {
+            Button(isRecordingSession ? "Stop" : (isVocal ? "Sing Along…" : "Play Along…")) {
                 isRecordingSession ? finishRecording() : startRecording()
             }
             .controlSize(.large)
             .tint(isRecordingSession ? .red : nil)
 
-            // Deliberately smaller and more muted than "Play Along…" —
-            // this is a secondary settings panel, not a peer action, and
-            // sitting right next to a large bordered button at the same
-            // visual weight made it compete for attention it doesn't need.
+            // Smaller and more muted than "Play Along…" so it doesn't
+            // compete with the primary action — but not so faint it's
+            // hard to notice; the timing-tolerance slider lives in here
+            // too, not just the count-in/metronome toggles.
             Button {
                 showingOptionsPopover = true
             } label: {
-                Image(systemName: "gearshape")
-                    .font(.system(size: 13))
+                Image(systemName: optionsActive ? "gearshape.fill" : "gearshape")
+                    .font(.system(size: 15))
             }
             .buttonStyle(.plain)
-            .foregroundStyle(optionsActive ? Color.secondary : Color.secondary.opacity(0.6))
+            .foregroundStyle(.secondary)
             .disabled(isRecordingSession)
-            .help("Count-in and metronome options")
+            .help("Count-in, metronome, and timing-tolerance options")
             .popover(isPresented: $showingOptionsPopover, arrowEdge: .bottom) {
                 VStack(alignment: .leading, spacing: 10) {
                     Toggle("4-beat lead-in", isOn: $leadInEnabled)

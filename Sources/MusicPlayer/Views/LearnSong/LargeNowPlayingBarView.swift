@@ -43,6 +43,15 @@ struct LargeNowPlayingBarView: View {
                 // the label. Play is the one action at full size/contrast;
                 // previous/next recede accordingly (smaller, muted).
                 HStack(spacing: 18) {
+                    Button {
+                        if isThisTrackCurrent { player.seek(to: 0) }
+                    } label: {
+                        Image(systemName: "backward.end.fill").font(.system(size: 15))
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(.secondary)
+                    .help("Rewind to the beginning")
+
                     Button { coordinator.previous() } label: {
                         Image(systemName: "backward.fill").font(.system(size: 15))
                     }

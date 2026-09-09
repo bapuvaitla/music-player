@@ -3,6 +3,11 @@ import GRDB
 
 public struct StoredRating: Sendable {
     public var rating: Int
+    /// When `rating` was last changed — used only for merging ratings
+    /// across machines (see `iCloudSyncService`): last-write-wins needs to
+    /// know which of two machines' ratings for the same track is actually
+    /// newer. `nil` for a rating set before this field existed.
+    public var ratedAt: Date?
     public var tags: [String]
     public var playCount: Double
     public var isHidden: Bool
@@ -20,6 +25,7 @@ public struct StoredRating: Sendable {
 
     public init(
         rating: Int,
+        ratedAt: Date? = nil,
         tags: [String],
         playCount: Double = 0,
         isHidden: Bool = false,
@@ -35,6 +41,7 @@ public struct StoredRating: Sendable {
         commentsOverride: String? = nil
     ) {
         self.rating = rating
+        self.ratedAt = ratedAt
         self.tags = tags
         self.playCount = playCount
         self.isHidden = isHidden
@@ -100,6 +107,18 @@ public protocol RatingStore: Sendable {
     func setHidden(_ hidden: Bool, forPath path: String) async throws
     func setOverrides(_ overrides: MetadataOverrides, forPath path: String) async throws
 
+    /// Cross-machine sync only (see `iCloudSyncService`) — sets a rating
+    /// *and* its timestamp explicitly, rather than stamping "now" the way
+    /// `setRating` does for a normal user-driven change. Applying a
+    /// remote rating that won a last-write-wins comparison needs to keep
+    /// that remote `ratedAt`, not overwrite it with the moment this
+    /// machine happened to sync.
+    func applySyncedRating(_ rating: Int, ratedAt: Date, forPath path: String) async throws
+    /// Cross-machine sync only — sets the *absolute* play count (already
+    /// merged, e.g. via max-of-both-machines), unlike `addPartialPlay`
+    /// which only ever adds.
+    func setPlayCount(_ count: Double, forPath path: String) async throws
+
     /// A locally-stored replacement cover image for this track, if one was
     /// set — kept in its own table rather than on the `ratings` row so
     /// `allRatings()` never has to bulk-load image blobs. `nil` means "use
@@ -143,12 +162,34 @@ public protocol RatingStore: Sendable {
 public struct LearnSessionData: Sendable {
     public var tabFilePath: String?
     public var vocalFilePath: String?
+    /// The guitar-notation (standard staff notation, not tab) MusicXML
+    /// file, if imported.
+    public var notationFilePath: String?
+    /// The original combined score (all staves in one MusicXML file), shown
+    /// before the user picks which one of the three staves above to
+    /// practice.
+    public var fullScoreFilePath: String?
+    /// Which stave was last being practiced — `"tab"`, `"vocal"`, or
+    /// `"notation"`. `nil` means none has been picked yet, so the view
+    /// should land on the full-score picker rather than a practice pane.
+    public var practiceTarget: String?
     public var loopStart: TimeInterval?
     public var loopEnd: TimeInterval?
 
-    public init(tabFilePath: String? = nil, vocalFilePath: String? = nil, loopStart: TimeInterval? = nil, loopEnd: TimeInterval? = nil) {
+    public init(
+        tabFilePath: String? = nil,
+        vocalFilePath: String? = nil,
+        notationFilePath: String? = nil,
+        fullScoreFilePath: String? = nil,
+        practiceTarget: String? = nil,
+        loopStart: TimeInterval? = nil,
+        loopEnd: TimeInterval? = nil
+    ) {
         self.tabFilePath = tabFilePath
         self.vocalFilePath = vocalFilePath
+        self.notationFilePath = notationFilePath
+        self.fullScoreFilePath = fullScoreFilePath
+        self.practiceTarget = practiceTarget
         self.loopStart = loopStart
         self.loopEnd = loopEnd
     }
@@ -217,6 +258,7 @@ private struct RatingRecord: Codable, FetchableRecord, PersistableRecord {
 
     var path: String
     var rating: Int
+    var ratedAt: Date?
     var tags: String
     var playCount: Double
     var isHidden: Bool
@@ -233,6 +275,7 @@ private struct RatingRecord: Codable, FetchableRecord, PersistableRecord {
 
     enum CodingKeys: String, CodingKey {
         case path, rating, tags
+        case ratedAt = "rated_at"
         case playCount = "play_count"
         case isHidden = "is_hidden"
         case titleOverride = "title_override"
@@ -253,6 +296,7 @@ private struct RatingRecord: Codable, FetchableRecord, PersistableRecord {
         RatingRecord(
             path: path,
             rating: existing?.rating ?? 0,
+            ratedAt: existing?.ratedAt,
             tags: overrides.tags.joined(separator: ","),
             playCount: existing?.playCount ?? 0,
             isHidden: existing?.isHidden ?? false,
@@ -293,6 +337,9 @@ private struct LearnSessionRecord: Codable, FetchableRecord, PersistableRecord {
     var trackPath: String
     var tabFilePath: String?
     var vocalFilePath: String?
+    var notationFilePath: String?
+    var fullScoreFilePath: String?
+    var practiceTarget: String?
     var loopStart: Double?
     var loopEnd: Double?
 
@@ -300,24 +347,47 @@ private struct LearnSessionRecord: Codable, FetchableRecord, PersistableRecord {
         case trackPath = "track_path"
         case tabFilePath = "tab_file_path"
         case vocalFilePath = "vocal_file_path"
+        case notationFilePath = "notation_file_path"
+        case fullScoreFilePath = "full_score_file_path"
+        case practiceTarget = "practice_target"
         case loopStart = "loop_start"
         case loopEnd = "loop_end"
     }
 
     var asData: LearnSessionData {
-        LearnSessionData(tabFilePath: tabFilePath, vocalFilePath: vocalFilePath, loopStart: loopStart, loopEnd: loopEnd)
+        LearnSessionData(
+            tabFilePath: tabFilePath,
+            vocalFilePath: vocalFilePath,
+            notationFilePath: notationFilePath,
+            fullScoreFilePath: fullScoreFilePath,
+            practiceTarget: practiceTarget,
+            loopStart: loopStart,
+            loopEnd: loopEnd
+        )
     }
 
-    init(trackPath: String, tabFilePath: String?, vocalFilePath: String?, loopStart: Double?, loopEnd: Double?) {
+    init(trackPath: String, tabFilePath: String?, vocalFilePath: String?, notationFilePath: String?, fullScoreFilePath: String?, practiceTarget: String?, loopStart: Double?, loopEnd: Double?) {
         self.trackPath = trackPath
         self.tabFilePath = tabFilePath
         self.vocalFilePath = vocalFilePath
+        self.notationFilePath = notationFilePath
+        self.fullScoreFilePath = fullScoreFilePath
+        self.practiceTarget = practiceTarget
         self.loopStart = loopStart
         self.loopEnd = loopEnd
     }
 
     init(trackPath: String, _ data: LearnSessionData) {
-        self.init(trackPath: trackPath, tabFilePath: data.tabFilePath, vocalFilePath: data.vocalFilePath, loopStart: data.loopStart, loopEnd: data.loopEnd)
+        self.init(
+            trackPath: trackPath,
+            tabFilePath: data.tabFilePath,
+            vocalFilePath: data.vocalFilePath,
+            notationFilePath: data.notationFilePath,
+            fullScoreFilePath: data.fullScoreFilePath,
+            practiceTarget: data.practiceTarget,
+            loopStart: data.loopStart,
+            loopEnd: data.loopEnd
+        )
     }
 }
 
@@ -531,6 +601,37 @@ public final class GRDBLocalStore: RatingStore, PlaylistStore, @unchecked Sendab
                 t.column("loop_end", .double)
             }
         }
+        migrator.registerMigration("addLearnSessionStaveFields") { db in
+            try db.alter(table: "learn_sessions") { t in
+                t.add(column: "notation_file_path", .text)
+                // Named for a PDF at the time this migration first ran —
+                // superseded by "full_score_file_path" once the full-score
+                // screen switched to rendering the original MusicXML
+                // instead (see "renameFullScoreColumnFromPDFToFile" below).
+                // A migration that's already been applied to someone's
+                // database can't be edited after the fact — GRDB tracks
+                // migrations as applied by name, so changing what an old
+                // one does here wouldn't touch a database it already ran
+                // against, only new ones.
+                t.add(column: "full_score_pdf_path", .text)
+                t.add(column: "practice_target", .text)
+            }
+        }
+        migrator.registerMigration("renameFullScoreColumnFromPDFToFile") { db in
+            try db.alter(table: "learn_sessions") { t in
+                t.rename(column: "full_score_pdf_path", to: "full_score_file_path")
+            }
+        }
+        migrator.registerMigration("addRatedAt") { db in
+            try db.alter(table: "ratings") { t in
+                // No default timestamp for existing rows — nil correctly
+                // means "we don't know when this was rated," not "just
+                // now," which would make every pre-existing rating look
+                // newer than a genuinely recent change on another machine
+                // the first time sync runs.
+                t.add(column: "rated_at", .datetime)
+            }
+        }
         return migrator
     }
 
@@ -545,6 +646,7 @@ public final class GRDBLocalStore: RatingStore, PlaylistStore, @unchecked Sendab
             let tags = record.tags.isEmpty ? [] : record.tags.components(separatedBy: ",")
             result[record.path] = StoredRating(
                 rating: record.rating,
+                ratedAt: record.ratedAt,
                 tags: tags,
                 playCount: record.playCount,
                 isHidden: record.isHidden,
@@ -565,7 +667,7 @@ public final class GRDBLocalStore: RatingStore, PlaylistStore, @unchecked Sendab
 
     private static func blankRecord(path: String) -> RatingRecord {
         RatingRecord(
-            path: path, rating: 0, tags: "", playCount: 0, isHidden: false,
+            path: path, rating: 0, ratedAt: nil, tags: "", playCount: 0, isHidden: false,
             titleOverride: nil, artistOverride: nil, albumOverride: nil, genreOverride: nil,
             yearOverride: nil, trackNumberOverride: nil, discNumberOverride: nil,
             bpmOverride: nil, keyOverride: nil, commentsOverride: nil
@@ -576,6 +678,16 @@ public final class GRDBLocalStore: RatingStore, PlaylistStore, @unchecked Sendab
         try await dbQueue.write { db in
             var record = try RatingRecord.fetchOne(db, key: path) ?? Self.blankRecord(path: path)
             record.rating = rating
+            record.ratedAt = Date()
+            try record.save(db)
+        }
+    }
+
+    public func applySyncedRating(_ rating: Int, ratedAt: Date, forPath path: String) async throws {
+        try await dbQueue.write { db in
+            var record = try RatingRecord.fetchOne(db, key: path) ?? Self.blankRecord(path: path)
+            record.rating = rating
+            record.ratedAt = ratedAt
             try record.save(db)
         }
     }
@@ -584,6 +696,14 @@ public final class GRDBLocalStore: RatingStore, PlaylistStore, @unchecked Sendab
         try await dbQueue.write { db in
             var record = try RatingRecord.fetchOne(db, key: path) ?? Self.blankRecord(path: path)
             record.playCount += fraction
+            try record.save(db)
+        }
+    }
+
+    public func setPlayCount(_ count: Double, forPath path: String) async throws {
+        try await dbQueue.write { db in
+            var record = try RatingRecord.fetchOne(db, key: path) ?? Self.blankRecord(path: path)
+            record.playCount = count
             try record.save(db)
         }
     }
@@ -736,12 +856,26 @@ public actor InMemoryLocalStore: RatingStore, PlaylistStore {
     public func setRating(_ rating: Int, forPath path: String) async throws {
         var existing = ratings[path] ?? StoredRating(rating: 0, tags: [])
         existing.rating = rating
+        existing.ratedAt = Date()
+        ratings[path] = existing
+    }
+
+    public func applySyncedRating(_ rating: Int, ratedAt: Date, forPath path: String) async throws {
+        var existing = ratings[path] ?? StoredRating(rating: 0, tags: [])
+        existing.rating = rating
+        existing.ratedAt = ratedAt
         ratings[path] = existing
     }
 
     public func addPartialPlay(_ fraction: Double, forPath path: String) async throws {
         var existing = ratings[path] ?? StoredRating(rating: 0, tags: [])
         existing.playCount += fraction
+        ratings[path] = existing
+    }
+
+    public func setPlayCount(_ count: Double, forPath path: String) async throws {
+        var existing = ratings[path] ?? StoredRating(rating: 0, tags: [])
+        existing.playCount = count
         ratings[path] = existing
     }
 

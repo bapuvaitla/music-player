@@ -12,7 +12,6 @@ import MusicPlayerKit
 struct InstrumentTransportView: View {
     @ObservedObject var engine: NotePlaybackEngine
     let sequence: NoteSequence
-    let label: String
     /// Shifts the whole row right to match wherever the score's own
     /// content actually starts — the tab grid reserves a string-label
     /// column before its bar lines begin, so without this the transport's
@@ -24,68 +23,78 @@ struct InstrumentTransportView: View {
     /// single binding just keeps the tuner popover's open/closed state
     /// from resetting when you switch panes mid-session.
     @Binding var showingTuner: Bool
+    /// A tuner's not relevant to following a vocal melody the way it is
+    /// for the two guitar staves — hidden there rather than shown as a
+    /// dead-feeling no-op button.
+    var showsTuner: Bool = true
 
     @State private var showingSpeedPopover = false
 
     var body: some View {
-        HStack(spacing: 16) {
-            // Play is the one action reached for constantly, so it's the
-            // only one at full size/contrast — rewind/back/forward are
-            // secondary and recede accordingly (smaller, muted).
-            Button {
-                engine.seek(to: 0)
-            } label: {
-                Image(systemName: "backward.end.fill").font(.system(size: 17))
-            }
-            .buttonStyle(.plain)
-            .foregroundStyle(.secondary)
-            .help("Rewind to the beginning")
-
-            Button {
-                engine.seek(to: sequence.barStart(before: engine.currentTime))
-            } label: {
-                Image(systemName: "backward.fill").font(.system(size: 17))
-            }
-            .buttonStyle(.plain)
-            .foregroundStyle(.secondary)
-            .help("Back one bar")
-
-            Button {
-                engine.isPlaying ? engine.pause() : engine.play()
-            } label: {
-                Image(systemName: engine.isPlaying ? "pause.circle.fill" : "play.circle.fill")
-                    .font(.system(size: 38))
-            }
-            .buttonStyle(.plain)
-
-            Button {
-                engine.seek(to: sequence.barStart(after: engine.currentTime))
-            } label: {
-                Image(systemName: "forward.fill").font(.system(size: 17))
-            }
-            .buttonStyle(.plain)
-            .foregroundStyle(.secondary)
-            .help("Forward one bar")
-
-            Text(label)
-                .font(.system(size: 15, weight: .medium))
+        // Grouped into tight clusters (playback / volume) with generous
+        // space between the clusters themselves — flat 16pt spacing
+        // across every element read as one undifferentiated row; this
+        // makes "these four buttons are one control, that's a separate
+        // one" visible at a glance. No "Tab"/"Melody"/"Notation" label
+        // here either — the always-visible stave switcher above already
+        // says which one you're on.
+        HStack(spacing: 28) {
+            HStack(spacing: 16) {
+                // Play is the one action reached for constantly, so it's
+                // the only one at full size/contrast — rewind/back/forward
+                // are secondary and recede accordingly (smaller, muted).
+                Button {
+                    engine.seek(to: 0)
+                } label: {
+                    Image(systemName: "backward.end.fill").font(.system(size: 17))
+                }
+                .buttonStyle(.plain)
                 .foregroundStyle(.secondary)
-                .frame(width: 60, alignment: .leading)
+                .help("Rewind to the beginning")
 
-            Image(systemName: "speaker.fill")
-                .font(.system(size: 13))
+                Button {
+                    engine.seek(to: sequence.barStart(before: engine.currentTime))
+                } label: {
+                    Image(systemName: "backward.fill").font(.system(size: 17))
+                }
+                .buttonStyle(.plain)
                 .foregroundStyle(.secondary)
-            Slider(
-                value: Binding(
-                    get: { Double(engine.volume) },
-                    set: { engine.volume = Float($0) }
-                ),
-                in: 0...1
-            )
-            .frame(maxWidth: 150)
-            Image(systemName: "speaker.wave.3.fill")
-                .font(.system(size: 13))
+                .help("Back one bar")
+
+                Button {
+                    engine.isPlaying ? engine.pause() : engine.play()
+                } label: {
+                    Image(systemName: engine.isPlaying ? "pause.circle.fill" : "play.circle.fill")
+                        .font(.system(size: 38))
+                }
+                .buttonStyle(.plain)
+
+                Button {
+                    engine.seek(to: sequence.barStart(after: engine.currentTime))
+                } label: {
+                    Image(systemName: "forward.fill").font(.system(size: 17))
+                }
+                .buttonStyle(.plain)
                 .foregroundStyle(.secondary)
+                .help("Forward one bar")
+            }
+
+            HStack(spacing: 8) {
+                Image(systemName: "speaker.fill")
+                    .font(.system(size: 13))
+                    .foregroundStyle(.secondary)
+                Slider(
+                    value: Binding(
+                        get: { Double(engine.volume) },
+                        set: { engine.volume = Float($0) }
+                    ),
+                    in: 0...1
+                )
+                .frame(maxWidth: 150)
+                Image(systemName: "speaker.wave.3.fill")
+                    .font(.system(size: 13))
+                    .foregroundStyle(.secondary)
+            }
 
             Button {
                 showingSpeedPopover = true
@@ -118,17 +127,19 @@ struct InstrumentTransportView: View {
                 .padding(14)
             }
 
-            Button {
-                showingTuner = true
-            } label: {
-                Image(systemName: "tuningfork")
-                    .font(.system(size: 16))
-            }
-            .buttonStyle(.plain)
-            .foregroundStyle(.secondary)
-            .help("Tuner")
-            .popover(isPresented: $showingTuner, arrowEdge: .top) {
-                TunerPopoverView()
+            if showsTuner {
+                Button {
+                    showingTuner = true
+                } label: {
+                    Image(systemName: "tuningfork")
+                        .font(.system(size: 16))
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(.secondary)
+                .help("Tuner")
+                .popover(isPresented: $showingTuner, arrowEdge: .top) {
+                    TunerPopoverView()
+                }
             }
         }
         .padding(.leading, leadingInset)

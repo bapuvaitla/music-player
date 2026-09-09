@@ -96,6 +96,7 @@ public final class MediaKeyController {
 
         guard let track else {
             MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
+            MPNowPlayingInfoCenter.default().playbackState = .stopped
             return
         }
 
@@ -108,6 +109,7 @@ public final class MediaKeyController {
             MPNowPlayingInfoPropertyPlaybackRate: player.isPlaying ? 1.0 : 0.0
         ]
         MPNowPlayingInfoCenter.default().nowPlayingInfo = info
+        MPNowPlayingInfoCenter.default().playbackState = playbackState
 
         artworkTask = Task {
             guard let image = await ArtworkLoader.shared.artwork(for: track) else { return }
@@ -143,6 +145,20 @@ public final class MediaKeyController {
         info[MPNowPlayingInfoPropertyElapsedPlaybackTime] = player.currentTime
         info[MPNowPlayingInfoPropertyPlaybackRate] = player.isPlaying ? 1.0 : 0.0
         MPNowPlayingInfoCenter.default().nowPlayingInfo = info
+        MPNowPlayingInfoCenter.default().playbackState = playbackState
+    }
+
+    /// macOS (unlike iOS) uses this explicit enum — separate from the
+    /// `nowPlayingInfo` dictionary's playback-rate entry — as one of the
+    /// signals `mediaremoted` uses to decide which app the F7/F8/F9 media
+    /// keys and Control Center's Now Playing widget should actually
+    /// control. Leaving it at its `.unknown` default (as this previously
+    /// did) is a plausible reason hardware keys kept going to Music.app
+    /// even while this app was actively playing and updating
+    /// `nowPlayingInfo` correctly.
+    private var playbackState: MPNowPlayingPlaybackState {
+        guard player.currentTrack != nil else { return .stopped }
+        return player.isPlaying ? .playing : .paused
     }
 }
 

@@ -24,10 +24,10 @@ public final class MetronomeEngine: ObservableObject {
     private static let systemSoundBankURL = URL(
         fileURLWithPath: "/System/Library/Components/CoreAudio.component/Contents/Resources/gs_instruments.dls"
     )
-    /// Acoustic grand piano (melodic bank, program 0) — the exact
-    /// instrument/bank `NotePlaybackEngine` already uses successfully, so
-    /// there's no doubt it's a valid, audible patch on this soundbank.
-    private static let clickNote: UInt8 = 84 // C6 — high and short-sounding
+    /// General MIDI's percussion kit (not a melodic instrument) loaded
+    /// specifically so the click can be a low wood block — a real
+    /// metronome/click-track tone — rather than a musical pitch.
+    private static let clickNote: UInt8 = 77 // GM percussion: Low Wood Block
     /// How long each click note is held before its note-off. The actual
     /// silent-metronome bug was here, not the instrument: `startNote`
     /// immediately followed by `stopNote` in the same closure (zero
@@ -44,7 +44,7 @@ public final class MetronomeEngine: ObservableObject {
             try sampler.loadSoundBankInstrument(
                 at: Self.systemSoundBankURL,
                 program: 0,
-                bankMSB: UInt8(kAUSampler_DefaultMelodicBankMSB),
+                bankMSB: UInt8(kAUSampler_DefaultPercussionBankMSB),
                 bankLSB: UInt8(kAUSampler_DefaultBankLSB)
             )
         } catch {
