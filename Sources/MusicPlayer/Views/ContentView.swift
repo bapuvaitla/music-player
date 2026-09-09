@@ -216,6 +216,7 @@ struct ContentView: View {
                     SyncStatusIndicator(status: library.syncStatus) {
                         Task { await library.syncWithiCloud() }
                     }
+                    .padding(.trailing, 6)
                 }
 
                 if library.isScanning {
