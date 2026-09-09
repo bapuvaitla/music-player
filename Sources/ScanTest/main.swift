@@ -627,6 +627,54 @@ Task { @MainActor in
     check(!afterDeleteLibrary.tracks.contains { $0.path == placeholder.path }, "deleted placeholder should not come back after a reload")
     print("PASS: placeholder tracks (create/edit/rate, unplayable, persist, delete)")
 
+    // MARK: - attachFile: promotes a placeholder to a real track once you
+    // actually have the file, without waiting for a folder rescan/"Import
+    // Known Tracks" to discover it — the track list's "Attach File…"
+    // context-menu item on a placeholder row.
+    for key in ["scannedFolderPaths", "additionalTrackPaths"] {
+        UserDefaults.standard.removeObject(forKey: key)
+    }
+    let attachFileStore = InMemoryLocalStore()
+    let attachFileLibrary = LibraryModel(ratingStore: attachFileStore, playlistStore: attachFileStore)
+    let attachPlaceholder = attachFileLibrary.createPlaceholderTrack(album: "Some Unowned Album")
+    attachFileLibrary.setRating(7, for: attachPlaceholder)
+    attachFileLibrary.updateMetadata(
+        for: attachPlaceholder, title: attachPlaceholder.title, artist: attachPlaceholder.artist,
+        album: attachPlaceholder.album, genre: attachPlaceholder.genre,
+        year: nil, trackNumber: nil, discNumber: nil, bpm: nil, key: "", comments: "", tags: ["favorite"]
+    )
+    guard let editedAttachPlaceholder = attachFileLibrary.tracks.first(where: { $0.path == attachPlaceholder.path }) else {
+        fail("attach-file placeholder disappeared after editing")
+    }
+    attachFileLibrary.createPlaylist(name: "Wishlist")
+    guard let wishlist = attachFileLibrary.playlists.first(where: { $0.name == "Wishlist" }) else {
+        fail("expected the Wishlist playlist to exist")
+    }
+    attachFileLibrary.addTrack(editedAttachPlaceholder, toPlaylistID: wishlist.id)
+
+    let fileToAttach = rockDir.appendingPathComponent("AlbumA/track1.m4a")
+    guard let attachedTrack = await attachFileLibrary.attachFile(to: editedAttachPlaceholder, fileURL: fileToAttach) else {
+        fail("attachFile should return the newly-promoted real track")
+    }
+    check(!attachedTrack.isPlaceholder, "the attached track should no longer be a placeholder")
+    check(attachedTrack.path == fileToAttach.path, "the attached track's path should be the picked file's path, got \(attachedTrack.path)")
+    check(attachedTrack.rating == 7, "the attached track should carry over the placeholder's rating, got \(attachedTrack.rating)")
+    check(attachedTrack.tags == ["favorite"], "the attached track should carry over the placeholder's tags, got \(attachedTrack.tags)")
+    check(!attachFileLibrary.tracks.contains { $0.path == editedAttachPlaceholder.path }, "the old placeholder entry should be gone")
+
+    let placeholdersAfterAttach = (try? await attachFileStore.allPlaceholderTracks()) ?? []
+    check(!placeholdersAfterAttach.contains { $0.path == editedAttachPlaceholder.path }, "the placeholder row should be removed from the store too")
+
+    guard let wishlistAfterAttach = attachFileLibrary.playlists.first(where: { $0.id == wishlist.id }) else {
+        fail("expected the Wishlist playlist to still exist")
+    }
+    check(wishlistAfterAttach.trackPaths == [fileToAttach.path], "the playlist should now reference the promoted track's real path, got \(wishlistAfterAttach.trackPaths)")
+
+    let relaunchedAttachFileLibrary = LibraryModel(ratingStore: attachFileStore, playlistStore: attachFileStore)
+    await relaunchedAttachFileLibrary.rescanAllFolders()
+    check(relaunchedAttachFileLibrary.tracks.contains { $0.path == fileToAttach.path }, "the attached file should survive a relaunch like any other individually-added file")
+    print("PASS: attachFile promotes a placeholder to a real track, carrying over rating/tags/playlist membership")
+
     // MARK: - A newly-created placeholder must NOT be persisted until an
     // actual edit (Save) happens — abandoning "Add Track" without saving
     // shouldn't leave a stray empty row behind after a relaunch.
@@ -1022,6 +1070,20 @@ Task { @MainActor in
     print("PASS: a locally-deleted playlist isn't resurrected by this machine's own sync")
 
     try? FileManager.default.removeItem(at: playlistSyncURL)
+
+    // MARK: - LibraryModel.syncStatus: surfaced in the toolbar so a sync
+    // failure or race (like the one that motivated this) is actually
+    // visible instead of silent.
+    let syncStatusURL = URL(fileURLWithPath: NSTemporaryDirectory() + "regressiontest-syncstatus-\(UUID().uuidString).json")
+    let syncStatusStore = InMemoryLocalStore()
+    let syncStatusLibrary = LibraryModel(ratingStore: syncStatusStore, playlistStore: syncStatusStore)
+    check(syncStatusLibrary.syncStatus == .neverSynced, "a fresh LibraryModel should report neverSynced before any sync, got \(syncStatusLibrary.syncStatus)")
+    _ = await syncStatusLibrary.syncWithiCloud(fileURL: syncStatusURL)
+    guard case .succeeded = syncStatusLibrary.syncStatus else {
+        fail("a successful sync against a writable scratch file should report succeeded, got \(syncStatusLibrary.syncStatus)")
+    }
+    print("PASS: LibraryModel.syncStatus reflects neverSynced -> succeeded")
+    try? FileManager.default.removeItem(at: syncStatusURL)
 
     // MARK: - Media key controller: construct it, play a track with
     // embedded artwork, and drive the artwork-loading + state-change paths

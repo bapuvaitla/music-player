@@ -2,6 +2,7 @@ import SwiftUI
 import AppKit
 import Combine
 import MusicPlayerKit
+import UniformTypeIdentifiers
 
 /// `Equatable`, with `.equatable()` applied at the call site in
 /// `ContentView` — the real fix for the recurring "All Tracks" slowdown
@@ -302,6 +303,17 @@ struct TrackListView: View, Equatable {
                         Button("Add to Queue") {
                             coordinator.addToQueue(track)
                         }
+                    } else {
+                        // Lets a placeholder — manually entered, or synced
+                        // in from another machine's catalog (see
+                        // iCloudSyncService.syncedPlaceholderPathPrefix) —
+                        // be promoted to a real track the moment you
+                        // actually have the file, without waiting for a
+                        // folder rescan/"Import Known Tracks" to discover
+                        // it on its own.
+                        Button("Attach File…") {
+                            presentAttachFilePanel(for: track)
+                        }
                     }
                 } else {
                     Button("Play Next") {
@@ -537,6 +549,24 @@ struct TrackListView: View, Equatable {
     private func pasteArtwork(for tracks: [Track]) {
         guard let image = NSImage(pasteboard: .general), let data = image.pngData else { return }
         library.setArtworkOverride(data, for: tracks)
+    }
+
+    /// `NSOpenPanel` directly rather than `.fileImporter` — see the
+    /// CLAUDE.md lesson about `.fileImporter` unreliably failing to
+    /// deliver a picked file (same pattern as
+    /// `LearnSongView.presentImporter`/`ContentView.presentImportKnownTracksPanel`).
+    private func presentAttachFilePanel(for placeholder: Track) {
+        let panel = NSOpenPanel()
+        panel.title = "Attach File"
+        panel.message = "Choose the audio file for “\(placeholder.title)”."
+        panel.allowsMultipleSelection = false
+        panel.canChooseDirectories = false
+        panel.canChooseFiles = true
+        panel.allowedContentTypes = [.audio]
+        panel.begin { response in
+            guard response == .OK, let url = panel.url else { return }
+            Task { await library.attachFile(to: placeholder, fileURL: url) }
+        }
     }
 
     @TableColumnBuilder<Track, KeyPathComparator<Track>>

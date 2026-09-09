@@ -685,6 +685,62 @@ public final class LibraryModel: ObservableObject {
         return newTrack
     }
 
+    /// Attaches a real audio file to a placeholder track (see
+    /// `Track.isPlaceholder`) — for a manually-created placeholder you've
+    /// finally obtained the file for, or a synced placeholder (see
+    /// `iCloudSyncService.syncedPlaceholderPathPrefix`) representing a
+    /// track another machine has catalogued that this machine turns out
+    /// to already have a file for, without waiting for a folder rescan or
+    /// "Import Known Tracks" to discover it.
+    ///
+    /// Carries the placeholder's rating/tags onto the new real track
+    /// (everything else — title/artist/album/genre — comes from the
+    /// file's own tags, same as any other scan) and removes the
+    /// placeholder row. This never touches any *other* machine's data:
+    /// each machine keeps its own file at its own local path, and sync
+    /// only ever merges fingerprint-keyed rating/playCount/metadata — so
+    /// attaching a file here can't cause another machine to lose its own
+    /// attached copy. What it *can* do is orphan the promotion itself: if
+    /// the picked file's own tags don't reasonably match what the
+    /// placeholder represents, it won't share the placeholder's
+    /// `syncFingerprint` going forward, and the two will sync as
+    /// separate, unrelated tracks instead of one promoted one — the same
+    /// risk `replaceFile` already carries for a mismatched swap.
+    public func attachFile(to placeholder: Track, fileURL: URL) async -> Track? {
+        guard placeholder.isPlaceholder, tracks.contains(where: { $0.path == placeholder.path }) else { return nil }
+
+        guard let rawTrack = await LibraryScanner.scanFiles([fileURL]).first else { return nil }
+        try? await ratingStore.setRating(placeholder.rating, forPath: rawTrack.path)
+        try? await ratingStore.setOverrides(
+            MetadataOverrides(
+                title: nil, artist: nil, album: nil, genre: nil, year: nil, trackNumber: nil,
+                discNumber: nil, bpm: nil, key: nil, comments: nil, tags: placeholder.tags
+            ),
+            forPath: rawTrack.path
+        )
+        guard let newTrack = await applyStoredRatings(to: [rawTrack]).first else { return nil }
+
+        let oldPath = placeholder.path
+        tracks.removeAll { $0.path == oldPath }
+        mergeScannedTracks([newTrack])
+        // Otherwise this newly-attached file would vanish on the next
+        // relaunch, same as any other individually-added file — see
+        // `additionalTrackPaths`.
+        rememberAdditionalTrackPaths([newTrack.path])
+        try? await ratingStore.deletePlaceholderTrack(path: oldPath)
+
+        for playlistIndex in playlists.indices {
+            guard let trackIndex = playlists[playlistIndex].trackPaths.firstIndex(of: oldPath) else { continue }
+            playlists[playlistIndex].trackPaths[trackIndex] = newTrack.path
+            persist(playlists[playlistIndex])
+        }
+
+        await ArtworkLoader.shared.invalidate(path: newTrack.path)
+        artworkVersion += 1
+
+        return newTrack
+    }
+
     /// Re-scans every previously added folder from scratch (picks up files
     /// that were added, removed, or retagged since last launch).
     public func rescanAllFolders() async {
@@ -787,6 +843,24 @@ public final class LibraryModel: ObservableObject {
         }
     }
 
+    /// Surfaced in the toolbar (see `ContentView`'s sync status item) —
+    /// added after a real debugging session where two machines synced
+    /// within the same minute raced each other (the second one read the
+    /// first one's update before iCloud had propagated it, then silently
+    /// overwrote it) with zero visible indication anything had gone
+    /// sideways. Not a guarantee every partial failure is caught —
+    /// `syncPlaylists` below still uses `try?` internally — but covers
+    /// the main case: whether the primary track/ratings sync itself
+    /// actually reached iCloud Drive.
+    public enum SyncStatus: Equatable, Sendable {
+        case neverSynced
+        case syncing
+        case succeeded(Date)
+        case failed(Date)
+    }
+
+    @Published public private(set) var syncStatus: SyncStatus = .neverSynced
+
     /// Merges ratings/play counts and the track/playlist catalog with
     /// whatever another machine last synced via iCloud Drive (see
     /// `iCloudSyncService`), then refreshes `tracks`/`playlists` to
@@ -797,7 +871,9 @@ public final class LibraryModel: ObservableObject {
     /// snapshot instead of the real iCloud Drive location.
     @discardableResult
     public func syncWithiCloud(fileURL: URL? = nil) async -> iCloudSyncService.SyncResult? {
+        syncStatus = .syncing
         guard let result = try? await iCloudSyncService.sync(tracks: tracks, store: ratingStore, fileURL: fileURL) else {
+            syncStatus = .failed(Date())
             return nil
         }
         if result.pathsUpdatedLocally > 0 {
@@ -816,6 +892,7 @@ public final class LibraryModel: ObservableObject {
         )
         await loadPlaylists()
 
+        syncStatus = .succeeded(Date())
         return result
     }
 

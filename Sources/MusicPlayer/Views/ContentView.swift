@@ -212,6 +212,12 @@ struct ContentView: View {
                     .help("Import files from a folder that match tracks already catalogued on another machine via iCloud sync")
                 }
 
+                ToolbarItem(placement: .automatic) {
+                    SyncStatusIndicator(status: library.syncStatus) {
+                        Task { await library.syncWithiCloud() }
+                    }
+                }
+
                 if library.isScanning {
                     ToolbarItem(placement: .automatic) {
                         ProgressView()
@@ -364,6 +370,73 @@ struct ContentView: View {
             }
         }
     }
+}
+
+/// Toolbar readout for `LibraryModel.syncStatus` — added after a real
+/// debugging session where two machines synced within the same minute
+/// raced each other with zero visible indication anything had gone
+/// sideways (one silently overwrote the other's fresher upload). Doubles
+/// as a manual sync trigger, same action as the "Sync Library via
+/// iCloud" menu item.
+private struct SyncStatusIndicator: View {
+    let status: LibraryModel.SyncStatus
+    let onTap: () -> Void
+
+    var body: some View {
+        Group {
+            if status == .syncing {
+                ProgressView()
+                    .controlSize(.small)
+            } else {
+                Button(action: onTap) {
+                    Image(systemName: iconName)
+                        .font(.system(size: 15))
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(tintColor)
+                .disabled(!iCloudSyncService.isAvailable)
+            }
+        }
+        .help(helpText)
+    }
+
+    private var iconName: String {
+        switch status {
+        case .neverSynced: return "icloud.slash"
+        case .syncing: return "icloud"
+        case .succeeded: return "checkmark.icloud.fill"
+        case .failed: return "exclamationmark.icloud.fill"
+        }
+    }
+
+    private var tintColor: Color {
+        switch status {
+        case .failed: return .red
+        case .neverSynced, .syncing, .succeeded: return .secondary
+        }
+    }
+
+    private var helpText: String {
+        guard iCloudSyncService.isAvailable else {
+            return "iCloud Drive isn't available on this Mac"
+        }
+        switch status {
+        case .neverSynced:
+            return "Never synced — click to sync now"
+        case .syncing:
+            return "Syncing…"
+        case .succeeded(let date):
+            return "Last synced \(Self.relativeFormatter.localizedString(for: date, relativeTo: Date())) — click to sync now"
+        case .failed(let date):
+            return "Sync failed \(Self.relativeFormatter.localizedString(for: date, relativeTo: Date())) — click to retry"
+        }
+    }
+
+    private static let relativeFormatter: RelativeDateTimeFormatter = {
+        let formatter = RelativeDateTimeFormatter()
+        formatter.unitsStyle = .abbreviated
+        return formatter
+    }()
 }
 
 /// Applies `.searchable` only when `isActive` — search doesn't make sense
