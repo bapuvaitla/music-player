@@ -35,21 +35,22 @@ public final class MetronomeEngine: ObservableObject {
     /// loaded — the sampler never got a chance to sound the note.
     private static let clickDuration: TimeInterval = 0.09
 
+    /// Same fix as `NotePlaybackEngine.hasLoadedInstrument` — loading the
+    /// sound bank instrument eagerly in `init()`, right after starting the
+    /// engine, is the exact ordering that produced raw beeping instead of
+    /// the loaded click tone there; deferring it to the first actual click
+    /// (see `ensureEngineStarted()`) fixed it. This class never got that
+    /// fix and used the old eager-load-in-init pattern, which is why the
+    /// metronome can come back as a plain beep instead of the intended
+    /// wood-block tone.
+    private var hasLoadedInstrument = false
+
     public init() {
         engine.attach(sampler)
         engine.connect(sampler, to: engine.mainMixerNode, format: nil)
         engine.mainMixerNode.outputVolume = volume
-        startEngine()
-        do {
-            try sampler.loadSoundBankInstrument(
-                at: Self.systemSoundBankURL,
-                program: 0,
-                bankMSB: UInt8(kAUSampler_DefaultPercussionBankMSB),
-                bankLSB: UInt8(kAUSampler_DefaultBankLSB)
-            )
-        } catch {
-            print("MetronomeEngine: failed to load click instrument: \(error)")
-        }
+        // Neither the engine start nor the instrument load happens here —
+        // see `ensureEngineStarted()`, called from the first actual click.
         observeConfigurationChanges()
     }
 
@@ -59,7 +60,7 @@ public final class MetronomeEngine: ObservableObject {
         }
     }
 
-    private func startEngine() {
+    private func ensureEngineStarted() {
         // Re-establishing the connection, not just restarting, matters
         // here: a hardware reconfiguration can force the engine onto a
         // different internal processing format, and a bare `engine.start()`
@@ -74,13 +75,35 @@ public final class MetronomeEngine: ObservableObject {
         } catch {
             print("MetronomeEngine: failed to start audio engine: \(error)")
         }
+        // Loading the instrument only after the engine has actually
+        // started (and reloading it after every *reconfiguration*, not
+        // just the very first start — see `observeConfigurationChanges`)
+        // is what avoids the raw-beeping failure mode.
+        if !hasLoadedInstrument {
+            do {
+                try sampler.loadSoundBankInstrument(
+                    at: Self.systemSoundBankURL,
+                    program: 0,
+                    bankMSB: UInt8(kAUSampler_DefaultPercussionBankMSB),
+                    bankLSB: UInt8(kAUSampler_DefaultBankLSB)
+                )
+                hasLoadedInstrument = true
+            } catch {
+                print("MetronomeEngine: failed to load click instrument: \(error)")
+            }
+        }
     }
 
     /// Same fix as `NotePlaybackEngine` — `AudioRecorder` adding a
     /// microphone input tap reconfigures the shared hardware device and
     /// silently stops every other engine already running, this one
     /// included (the missing count-in/click audio on takes after the
-    /// first Record press). Restarting once notified recovers it.
+    /// first Record press). Restarting once notified recovers it. Unlike
+    /// a normal click-triggered start, a genuine hardware reconfiguration
+    /// can leave the sampler connected but voiceless even though
+    /// `hasLoadedInstrument` is already true — force a fresh reload here
+    /// rather than skipping it, since this event is rare enough that the
+    /// extra load is cheap either way.
     private func observeConfigurationChanges() {
         configChangeObserver = NotificationCenter.default.addObserver(
             forName: .AVAudioEngineConfigurationChange,
@@ -88,7 +111,8 @@ public final class MetronomeEngine: ObservableObject {
             queue: .main
         ) { [weak self] _ in
             Task { @MainActor in
-                self?.startEngine()
+                self?.hasLoadedInstrument = false
+                self?.ensureEngineStarted()
             }
         }
     }
@@ -97,6 +121,7 @@ public final class MetronomeEngine: ObservableObject {
     /// calls `completion` once the last one has sounded — used for a
     /// count-in before a take actually begins.
     public func playClicks(count: Int, beatInterval: TimeInterval, completion: @escaping () -> Void = {}) {
+        ensureEngineStarted()
         cancel()
         for beat in 0..<count {
             scheduleClick(after: beatInterval * Double(beat))
@@ -108,6 +133,7 @@ public final class MetronomeEngine: ObservableObject {
 
     /// Starts a steady click every `beatInterval` seconds until `cancel()`.
     public func startSteadyClick(beatInterval: TimeInterval) {
+        ensureEngineStarted()
         cancel()
         scheduleSteadyClick(anchor: Date(), beatInterval: beatInterval, beatIndex: 0)
     }

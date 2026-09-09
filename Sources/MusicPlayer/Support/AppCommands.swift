@@ -11,6 +11,7 @@ import Foundation
 /// made Cmd+I intermittently show a stale/empty edit sheet before.
 extension Notification.Name {
     static let requestAddMusic = Notification.Name("MusicPlayer.requestAddMusic")
+    static let requestImportKnownTracks = Notification.Name("MusicPlayer.requestImportKnownTracks")
     static let requestEditInfo = Notification.Name("MusicPlayer.requestEditInfo")
     static let requestLocatePlayingTrack = Notification.Name("MusicPlayer.requestLocatePlayingTrack")
     static let requestGoToPlayingTrack = Notification.Name("MusicPlayer.requestGoToPlayingTrack")

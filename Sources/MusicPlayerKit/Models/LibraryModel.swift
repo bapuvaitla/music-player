@@ -101,6 +101,16 @@ public final class LibraryModel: ObservableObject {
     /// multiple "Add Folder" picks instead of a new pick replacing the last.
     @Published public private(set) var scannedFolderPaths: [String] = []
 
+    /// Every individually-added file's path — from `addFiles` (loose
+    /// files, not a whole folder) or `importKnownTracks` (matched files
+    /// out of a folder that isn't itself being tracked for rescanning).
+    /// Without this, those tracks only ever existed in memory: unlike
+    /// `addFolder`, nothing durable said "re-find this file" at the next
+    /// launch, so `rescanAllFolders()` (which rebuilds `tracks` from
+    /// scratch) silently dropped them. Not `@Published`/exposed — nothing
+    /// in the UI needs to show or gate on this list itself.
+    private var additionalTrackPaths: [String] = []
+
     /// Albums manually flagged "incomplete" — the user doesn't own every
     /// track, hasn't heard the rest, and doesn't want the average shown as
     /// if it reflected the whole album. Purely a user-declared flag, not
@@ -117,6 +127,7 @@ public final class LibraryModel: ObservableObject {
     private static let visibleColumnsKey = "visibleTrackColumns"
     private static let columnOrderKey = "trackColumnOrder"
     private static let scannedFoldersKey = "scannedFolderPaths"
+    private static let additionalTrackPathsKey = "additionalTrackPaths"
     private static let selectedArtistsKey = "selectedArtists"
     private static let selectedAlbumsKey = "selectedAlbums"
     private static let selectedGenresKey = "selectedGenres"
@@ -130,6 +141,7 @@ public final class LibraryModel: ObservableObject {
         self.visibleColumns = Self.loadVisibleColumns()
         self.columnOrder = Self.loadColumnOrder()
         self.scannedFolderPaths = Self.loadScannedFolderPaths()
+        self.additionalTrackPaths = Self.loadAdditionalTrackPaths()
         self.selectedArtists = Set(UserDefaults.standard.stringArray(forKey: Self.selectedArtistsKey) ?? [])
         self.selectedAlbums = Set(UserDefaults.standard.stringArray(forKey: Self.selectedAlbumsKey) ?? [])
         self.selectedGenres = Set(UserDefaults.standard.stringArray(forKey: Self.selectedGenresKey) ?? [])
@@ -422,7 +434,9 @@ public final class LibraryModel: ObservableObject {
     /// Imports individually-picked audio files rather than a whole folder.
     /// Unlike `addFolder`, these aren't added to `scannedFolderPaths` — a
     /// loose file isn't a "folder to keep watching" the way `addFolder`'s
-    /// argument is, so `rescanAllFolders` won't try to re-walk it.
+    /// argument is — but each file's own path is remembered in
+    /// `additionalTrackPaths` so `rescanAllFolders` (called at every
+    /// launch) still finds it again later.
     public func addFiles(_ fileURLs: [URL]) async -> Int {
         isScanning = true
         scanProgress = (0, 0)
@@ -434,8 +448,78 @@ public final class LibraryModel: ObservableObject {
         isScanning = false
         scanProgress = nil
 
+        rememberAdditionalTrackPaths(scanned.map(\.path))
         mergeScannedTracks(scanned)
         return scanned.count
+    }
+
+    /// Records paths outside of any `scannedFolderPaths` folder so they
+    /// survive a relaunch — see `additionalTrackPaths`.
+    private func rememberAdditionalTrackPaths(_ paths: [String]) {
+        var didAdd = false
+        for path in paths where !additionalTrackPaths.contains(path) {
+            additionalTrackPaths.append(path)
+            didAdd = true
+        }
+        if didAdd { persistAdditionalTrackPaths() }
+    }
+
+    private static func loadAdditionalTrackPaths() -> [String] {
+        guard let raw = UserDefaults.standard.string(forKey: additionalTrackPathsKey), !raw.isEmpty else { return [] }
+        return raw.components(separatedBy: "\n")
+    }
+
+    private func persistAdditionalTrackPaths() {
+        UserDefaults.standard.set(additionalTrackPaths.joined(separator: "\n"), forKey: Self.additionalTrackPathsKey)
+    }
+
+    /// Scans `folderURL` like `addFolder`, but keeps only files whose
+    /// fingerprint is already known from the iCloud sync catalog (see
+    /// `iCloudSyncService.knownFingerprints`) — tracks already catalogued
+    /// in the library on another machine. Lets a second machine mirror
+    /// what's been curated elsewhere out of a larger local folder (e.g. a
+    /// full personal archive) without re-importing everything in it and
+    /// without moving any audio files between machines. Unlike
+    /// `addFolder`, doesn't add `folderURL` itself to `scannedFolderPaths`
+    /// — a plain rescan of the whole folder would re-import everything in
+    /// it, defeating the point of matching only known tracks — but each
+    /// matched file's own path is remembered in `additionalTrackPaths` so
+    /// it still survives a relaunch. Returns how many matching tracks
+    /// were found; `fileURL` exists only for tests to point at a scratch
+    /// snapshot instead of the real iCloud Drive location.
+    ///
+    /// A newly-matched track has no *locally*-stored rating/play count of
+    /// its own yet — `applyStoredRatings` below only ever pulls from this
+    /// machine's own store, which has never seen this file before. The
+    /// whole point of matching against the iCloud catalog is that the
+    /// rating/play count already exist there (from whichever machine
+    /// catalogued it first), so this re-runs `syncWithiCloud` once the
+    /// matches are merged into `tracks`, letting that fingerprint-keyed
+    /// merge fill them in — the same thing that happens automatically for
+    /// a normal scan, just at app launch (see `ContentView`'s `.task`)
+    /// rather than mid-session.
+    @discardableResult
+    public func importKnownTracks(from folderURL: URL, fileURL: URL? = nil) async -> Int {
+        let known = iCloudSyncService.knownFingerprints(fileURL: fileURL)
+        guard !known.isEmpty else { return 0 }
+
+        isScanning = true
+        scanProgress = (0, 0)
+        let scanned = await applyStoredRatings(
+            to: await LibraryScanner.scan(rootURL: folderURL) { [weak self] completed, total in
+                Task { @MainActor in self?.scanProgress = (completed, total) }
+            }
+        )
+        isScanning = false
+        scanProgress = nil
+
+        let matched = scanned.filter { known.contains($0.syncFingerprint) }
+        guard !matched.isEmpty else { return 0 }
+
+        rememberAdditionalTrackPaths(matched.map(\.path))
+        mergeScannedTracks(matched)
+        await syncWithiCloud(fileURL: fileURL)
+        return matched.count
     }
 
     private func mergeScannedTracks(_ scanned: [Track]) {
@@ -466,7 +550,7 @@ public final class LibraryModel: ObservableObject {
                 artist: data.artist,
                 album: data.album,
                 genre: data.genre,
-                duration: 0,
+                duration: data.duration,
                 year: data.year,
                 trackNumber: data.trackNumber,
                 discNumber: data.discNumber,
@@ -474,7 +558,8 @@ public final class LibraryModel: ObservableObject {
                 key: data.key,
                 comments: data.comments,
                 rating: data.rating,
-                tags: data.tags
+                tags: data.tags,
+                playCount: data.playCount
             )
             track.isHidden = data.isHidden
             track.isPlaceholder = true
@@ -576,6 +661,17 @@ public final class LibraryModel: ObservableObject {
 
         tracks[index] = newTrack
 
+        // If the old file was tracked individually (see
+        // `additionalTrackPaths`) rather than via a whole scanned folder,
+        // swap it for the new path — otherwise the new file would never
+        // be remembered for next launch, and the old (still-on-disk, just
+        // no longer referenced) file would linger and get re-added as a
+        // stale duplicate on the next rescan.
+        if let additionalIndex = additionalTrackPaths.firstIndex(of: oldPath) {
+            additionalTrackPaths[additionalIndex] = newTrack.path
+            persistAdditionalTrackPaths()
+        }
+
         for playlistIndex in playlists.indices {
             guard let trackIndex = playlists[playlistIndex].trackPaths.firstIndex(of: oldPath) else { continue }
             playlists[playlistIndex].trackPaths[trackIndex] = newTrack.path
@@ -592,13 +688,37 @@ public final class LibraryModel: ObservableObject {
     /// Re-scans every previously added folder from scratch (picks up files
     /// that were added, removed, or retagged since last launch).
     public func rescanAllFolders() async {
-        guard !scannedFolderPaths.isEmpty else { return }
+        guard !scannedFolderPaths.isEmpty || !additionalTrackPaths.isEmpty else { return }
 
         var combined: [Track] = []
         for path in scannedFolderPaths {
             combined.append(contentsOf: await scanWithStoredRatings(rootURL: URL(fileURLWithPath: path)))
         }
 
+        // Files remembered individually (see `additionalTrackPaths`) rather
+        // than via a whole folder — re-verify each still exists first,
+        // since `LibraryScanner.scanFiles` doesn't skip a missing file the
+        // way walking a folder naturally would, and drop any that don't
+        // so a deleted/moved file doesn't linger here forever.
+        let stillPresent = additionalTrackPaths.filter { FileManager.default.fileExists(atPath: $0) }
+        if stillPresent.count != additionalTrackPaths.count {
+            additionalTrackPaths = stillPresent
+            persistAdditionalTrackPaths()
+        }
+        if !stillPresent.isEmpty {
+            isScanning = true
+            scanProgress = (0, 0)
+            let rescanned = await applyStoredRatings(
+                to: await LibraryScanner.scanFiles(stillPresent.map { URL(fileURLWithPath: $0) }) { [weak self] completed, total in
+                    Task { @MainActor in self?.scanProgress = (completed, total) }
+                }
+            )
+            isScanning = false
+            scanProgress = nil
+            combined.append(contentsOf: rescanned)
+        }
+
+        guard !combined.isEmpty else { return }
         var byPath: [String: Track] = [:]
         for track in combined { byPath[track.path] = track }
         tracks = byPath.values.sorted { $0.title.localizedStandardCompare($1.title) == .orderedAscending }
@@ -667,21 +787,48 @@ public final class LibraryModel: ObservableObject {
         }
     }
 
-    /// Merges ratings/play counts with whatever another machine last
-    /// synced via iCloud Drive (see `iCloudSyncService`), then refreshes
-    /// `tracks` to reflect anything that changed. A no-op (throws, caught
-    /// here) if iCloud Drive isn't available on this Mac — sync is opt-in
-    /// by having iCloud Drive enabled at all, not a hard requirement to
-    /// use the app.
+    /// Merges ratings/play counts and the track/playlist catalog with
+    /// whatever another machine last synced via iCloud Drive (see
+    /// `iCloudSyncService`), then refreshes `tracks`/`playlists` to
+    /// reflect anything that changed. A no-op (throws, caught here) if
+    /// iCloud Drive isn't available on this Mac — sync is opt-in by
+    /// having iCloud Drive enabled at all, not a hard requirement to use
+    /// the app. `fileURL` exists only for tests to point at a scratch
+    /// snapshot instead of the real iCloud Drive location.
     @discardableResult
-    public func syncWithiCloud() async -> iCloudSyncService.SyncResult? {
-        guard let result = try? await iCloudSyncService.sync(tracks: tracks, store: ratingStore) else {
+    public func syncWithiCloud(fileURL: URL? = nil) async -> iCloudSyncService.SyncResult? {
+        guard let result = try? await iCloudSyncService.sync(tracks: tracks, store: ratingStore, fileURL: fileURL) else {
             return nil
         }
         if result.pathsUpdatedLocally > 0 {
             await refreshRatingsFromStore()
         }
+        // Must happen before playlist sync below — a playlist's track
+        // fingerprints can only resolve to *something* locally (a real
+        // track or a placeholder) once this machine's placeholders are
+        // caught up with the merged catalog.
+        await reconcileSyncedPlaceholders()
+
+        let excludedPlaylistIDs = (try? await playlistStore.excludedPlaylistIDs()) ?? []
+        try? await iCloudSyncService.syncPlaylists(
+            playlists: playlists, tracks: tracks, store: playlistStore,
+            excludedPlaylistIDs: excludedPlaylistIDs, fileURL: fileURL
+        )
+        await loadPlaylists()
+
         return result
+    }
+
+    /// Drops any synced placeholder (see
+    /// `iCloudSyncService.syncedPlaceholderPathPrefix`) from memory before
+    /// reloading — `sync(...)` just reconciled the *store* (created ones
+    /// for newly-known fingerprints, removed ones a real local file now
+    /// covers), but `tracks` hasn't caught up yet, and `loadPlaceholderTracks`
+    /// only ever merges in what's currently stored, never removes what
+    /// isn't anymore.
+    private func reconcileSyncedPlaceholders() async {
+        tracks.removeAll { $0.path.hasPrefix(iCloudSyncService.syncedPlaceholderPathPrefix) }
+        await loadPlaceholderTracks()
     }
 
     private static func loadScannedFolderPaths() -> [String] {
@@ -1034,7 +1181,16 @@ public final class LibraryModel: ObservableObject {
     public func deletePlaylist(_ id: UUID) {
         playlists.removeAll { $0.id == id }
         if selectedPlaylistID == id { selectedPlaylistID = nil }
-        Task { try? await playlistStore.deletePlaylist(id: id) }
+        Task {
+            try? await playlistStore.deletePlaylist(id: id)
+            // Also recorded locally (mirrors `excludedPaths` for tracks)
+            // so this machine's own next sync doesn't resurrect it from
+            // the shared catalog before the deletion has any chance to
+            // happen on the other machine too — see
+            // `iCloudSyncService.syncPlaylists`'s doc comment on why
+            // deletion isn't otherwise propagated.
+            try? await playlistStore.excludePlaylist(id: id)
+        }
     }
 
     public func addTrack(_ track: Track, toPlaylistID id: UUID) {
@@ -1056,7 +1212,18 @@ public final class LibraryModel: ObservableObject {
         persist(playlists[index])
     }
 
+    /// Every playlist mutation above funnels through here, so stamping
+    /// `updatedAt` in this one place (rather than at each call site)
+    /// covers all of them — needed for cross-machine last-write-wins (see
+    /// `iCloudSyncService.syncPlaylists`). Written back into `playlists`
+    /// too, not just the store, so the in-memory copy the *next*
+    /// `syncWithiCloud()` call reads already reflects it.
     private func persist(_ playlist: Playlist) {
-        Task { try? await playlistStore.savePlaylist(playlist) }
+        var stamped = playlist
+        stamped.updatedAt = Date()
+        if let index = playlists.firstIndex(where: { $0.id == stamped.id }) {
+            playlists[index] = stamped
+        }
+        Task { try? await playlistStore.savePlaylist(stamped) }
     }
 }

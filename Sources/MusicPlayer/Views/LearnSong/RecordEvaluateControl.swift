@@ -26,6 +26,7 @@ struct RecordEvaluateControl: View {
     @State private var isCountingIn = false
     @State private var savedLoopRegion: ClosedRange<TimeInterval>?
     @State private var showingOptionsPopover = false
+    @State private var showingSpeedPopover = false
     @State private var liveEvaluationTimer: Timer?
     /// How far a detected onset may fall from a note's expected time and
     /// still count as an attempt at it — user-adjustable so a run of
@@ -113,6 +114,41 @@ struct RecordEvaluateControl: View {
                 .padding(14)
             }
 
+            // Practice speed (slows playback down without changing pitch)
+            // lives here rather than on the transport above it — it
+            // matters most exactly when you're about to play/sing along.
+            Button {
+                showingSpeedPopover = true
+            } label: {
+                Image(systemName: "speedometer")
+                    .font(.system(size: 15))
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(engine.playbackRate != 1.0 ? Color.primary : Color.secondary)
+            .disabled(isRecordingSession)
+            .help("Practice speed")
+            .popover(isPresented: $showingSpeedPopover, arrowEdge: .bottom) {
+                HStack(spacing: 8) {
+                    Text("Speed")
+                        .font(.body)
+                        .foregroundStyle(.secondary)
+                    Slider(
+                        value: Binding(
+                            get: { engine.playbackRate },
+                            set: { engine.playbackRate = $0 }
+                        ),
+                        in: 0.25...1.25
+                    )
+                    .frame(width: 140)
+                    Text("\(Int((engine.playbackRate * 100).rounded()))%")
+                        .font(.body)
+                        .monospacedDigit()
+                        .foregroundStyle(.secondary)
+                        .frame(width: 42, alignment: .leading)
+                }
+                .padding(14)
+            }
+
             if isCountingIn {
                 Label("Count-in…", systemImage: "metronome")
                     .font(.callout)
@@ -172,6 +208,18 @@ struct RecordEvaluateControl: View {
         liveEvaluationTimer?.invalidate()
         liveEvaluationTimer = Timer.scheduledTimer(withTimeInterval: 0.3, repeats: true) { _ in
             Task { @MainActor in
+                // With no loop selected, `regionEnd` is the whole
+                // sequence's own duration and `engine` already stops
+                // itself there (see the `engine.isPlaying` handler below)
+                // — this only fires early when a loop selection is
+                // actually narrower than the full sequence, so "Play
+                // Along" stops (and scores) right at the end of the
+                // selected loop instead of playing on through the rest of
+                // the song.
+                if loopRegion != nil, engine.currentTime >= regionEnd {
+                    finishRecording()
+                    return
+                }
                 evaluateSettledNotes()
             }
         }

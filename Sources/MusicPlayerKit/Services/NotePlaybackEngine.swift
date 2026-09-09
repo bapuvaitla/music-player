@@ -32,7 +32,7 @@ public final class NotePlaybackEngine: ObservableObject {
     /// re-scheduled further apart, not resampled), which is what a
     /// practice tool wants. Re-schedules from the current position if
     /// changed mid-playback.
-    public var playbackRate: Double = 1.0 {
+    @Published public var playbackRate: Double = 1.0 {
         didSet {
             guard playbackRate != oldValue, isPlaying else { return }
             let position = currentTime
@@ -131,7 +131,12 @@ public final class NotePlaybackEngine: ObservableObject {
     /// other engine already running against it, this one included. This
     /// is what caused playback/metronome audio to go quiet on takes after
     /// the first Record press. Apple's documented recovery is simply to
-    /// restart the engine once notified.
+    /// restart the engine once notified. Unlike a normal `play()`-
+    /// triggered restart, a genuine hardware reconfiguration can leave the
+    /// sampler connected but voiceless even though `hasLoadedInstrument`
+    /// is already true (the underlying AudioUnit graph gets rebuilt) —
+    /// force a fresh reload here instead of skipping it, since this event
+    /// is rare enough that the extra load is cheap either way.
     private func observeConfigurationChanges() {
         configChangeObserver = NotificationCenter.default.addObserver(
             forName: .AVAudioEngineConfigurationChange,
@@ -139,6 +144,7 @@ public final class NotePlaybackEngine: ObservableObject {
             queue: .main
         ) { [weak self] _ in
             Task { @MainActor in
+                self?.hasLoadedInstrument = false
                 self?.startEngine()
             }
         }

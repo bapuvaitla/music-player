@@ -99,6 +99,9 @@ struct ContentView: View {
         .onReceive(NotificationCenter.default.publisher(for: .requestAddMusic)) { _ in
             showingImporter = true
         }
+        .onReceive(NotificationCenter.default.publisher(for: .requestImportKnownTracks)) { _ in
+            presentImportKnownTracksPanel()
+        }
         .onReceive(NotificationCenter.default.publisher(for: .requestShowColumnsPopover)) { _ in
             showingColumnsPopover = true
         }
@@ -200,6 +203,15 @@ struct ContentView: View {
                     .disabled(library.scannedFolderPaths.isEmpty)
                 }
 
+                ToolbarItem(placement: .automatic) {
+                    Button {
+                        presentImportKnownTracksPanel()
+                    } label: {
+                        Label("Import Known Tracks", systemImage: "icloud.and.arrow.down")
+                    }
+                    .help("Import files from a folder that match tracks already catalogued on another machine via iCloud sync")
+                }
+
                 if library.isScanning {
                     ToolbarItem(placement: .automatic) {
                         ProgressView()
@@ -299,6 +311,48 @@ struct ContentView: View {
         addFolderSummary = count > 0
             ? "Added \(count) track\(count == 1 ? "" : "s") from \(label)"
             : "No audio files found in \(label)"
+        try? await Task.sleep(nanoseconds: 4_000_000_000)
+        addFolderSummary = nil
+    }
+
+    /// Folder-only picker for "Import Known Tracks…" — uses `NSOpenPanel`
+    /// directly rather than `.fileImporter`, per the established lesson
+    /// about `.fileImporter` unreliably failing to deliver a picked file
+    /// (see `LearnSongView.presentImporter` for the same pattern).
+    private func presentImportKnownTracksPanel() {
+        let panel = NSOpenPanel()
+        panel.title = "Import Known Tracks"
+        panel.message = "Choose a folder to scan for tracks already catalogued on another machine."
+        panel.allowsMultipleSelection = false
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.begin { response in
+            guard response == .OK, let url = panel.url else { return }
+            Task { await importKnownTracks(from: url) }
+        }
+    }
+
+    private func importKnownTracks(from folderURL: URL) async {
+        guard iCloudSyncService.isAvailable else {
+            addFolderSummary = "iCloud Drive isn't available on this Mac"
+            try? await Task.sleep(nanoseconds: 4_000_000_000)
+            addFolderSummary = nil
+            return
+        }
+        guard !iCloudSyncService.knownFingerprints().isEmpty else {
+            addFolderSummary = "No synced catalog yet — sync with your other machine first"
+            try? await Task.sleep(nanoseconds: 4_000_000_000)
+            addFolderSummary = nil
+            return
+        }
+
+        let count = await library.importKnownTracks(from: folderURL)
+        library.resetAllFilters()
+
+        let label = "“\(folderURL.lastPathComponent)”"
+        addFolderSummary = count > 0
+            ? "Imported \(count) known track\(count == 1 ? "" : "s") from \(label)"
+            : "No matching tracks found in \(label)"
         try? await Task.sleep(nanoseconds: 4_000_000_000)
         addFolderSummary = nil
     }

@@ -95,9 +95,13 @@ struct MusicPlayerApp: App {
                 }
                 .disabled(library.scannedFolderPaths.isEmpty)
 
+                Button("Import Known Tracks…") {
+                    NotificationCenter.default.post(name: .requestImportKnownTracks, object: nil)
+                }
+
                 Divider()
 
-                Button("Sync Ratings & Plays via iCloud") {
+                Button("Sync Library via iCloud") {
                     NotificationCenter.default.post(name: .requestSyncNow, object: nil)
                 }
                 .disabled(!iCloudSyncService.isAvailable)

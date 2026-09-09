@@ -213,6 +213,20 @@ public struct PlaceholderTrackData: Sendable {
     public var rating: Int
     public var tags: [String]
     public var isHidden: Bool
+    /// A manually-created placeholder can't be played, so this is always
+    /// 0 for one — but a placeholder auto-created by iCloud sync (see
+    /// `iCloudSyncService.syncedPlaceholderPathPrefix`) stands in for a
+    /// track that *has* been played, just not on this machine, and needs
+    /// to carry that count over.
+    public var playCount: Double
+    /// Always 0 for a manually-created placeholder (no real file, so no
+    /// real duration) — but a synced placeholder needs its actual
+    /// duration preserved, since `Track.syncFingerprint` includes it: a
+    /// placeholder reconstructed with the wrong duration would never
+    /// match the real file's fingerprint once one shows up locally, and
+    /// the "promotion" that's supposed to replace the placeholder with
+    /// the real track would silently never happen.
+    public var duration: TimeInterval
 
     public init(
         path: String,
@@ -228,7 +242,9 @@ public struct PlaceholderTrackData: Sendable {
         comments: String? = nil,
         rating: Int = 0,
         tags: [String] = [],
-        isHidden: Bool = false
+        isHidden: Bool = false,
+        playCount: Double = 0,
+        duration: TimeInterval = 0
     ) {
         self.path = path
         self.title = title
@@ -243,7 +259,9 @@ public struct PlaceholderTrackData: Sendable {
         self.comments = comments
         self.rating = rating
         self.tags = tags
+        self.duration = duration
         self.isHidden = isHidden
+        self.playCount = playCount
     }
 }
 
@@ -251,6 +269,16 @@ public protocol PlaylistStore: Sendable {
     func allPlaylists() async throws -> [Playlist]
     func savePlaylist(_ playlist: Playlist) async throws
     func deletePlaylist(id: UUID) async throws
+
+    /// Playlist ids deleted locally via `LibraryModel.deletePlaylist(_:)`
+    /// — mirrors `RatingStore.excludedPaths`/`excludePath` exactly, just
+    /// for playlists: keeps this machine's *own* next sync from
+    /// resurrecting something just deleted here, before the deletion has
+    /// any chance to also happen on the other machine (which it doesn't
+    /// automatically — see `iCloudSyncService.syncPlaylists`'s doc comment
+    /// on why deletion isn't propagated).
+    func excludedPlaylistIDs() async throws -> Set<UUID>
+    func excludePlaylist(id: UUID) async throws
 }
 
 private struct RatingRecord: Codable, FetchableRecord, PersistableRecord {
@@ -331,6 +359,11 @@ private struct ExcludedPathRecord: Codable, FetchableRecord, PersistableRecord {
     var path: String
 }
 
+private struct ExcludedPlaylistRecord: Codable, FetchableRecord, PersistableRecord {
+    static let databaseTableName = "excluded_playlists"
+    var id: String
+}
+
 private struct LearnSessionRecord: Codable, FetchableRecord, PersistableRecord {
     static let databaseTableName = "learn_sessions"
 
@@ -408,13 +441,16 @@ private struct PlaceholderTrackRecord: Codable, FetchableRecord, PersistableReco
     var rating: Int
     var tags: String
     var isHidden: Bool
+    var playCount: Double
+    var duration: Double
 
     enum CodingKeys: String, CodingKey {
-        case path, title, artist, album, genre, year, rating, tags, key, comments
+        case path, title, artist, album, genre, year, rating, tags, key, comments, duration
         case trackNumber = "track_number"
         case discNumber = "disc_number"
         case bpm
         case isHidden = "is_hidden"
+        case playCount = "play_count"
     }
 
     var asData: PlaceholderTrackData {
@@ -423,11 +459,11 @@ private struct PlaceholderTrackRecord: Codable, FetchableRecord, PersistableReco
             year: year, trackNumber: trackNumber, discNumber: discNumber, bpm: bpm,
             key: key, comments: comments, rating: rating,
             tags: tags.isEmpty ? [] : tags.components(separatedBy: ","),
-            isHidden: isHidden
+            isHidden: isHidden, playCount: playCount, duration: duration
         )
     }
 
-    init(path: String, title: String, artist: String, album: String, genre: String, year: Int?, trackNumber: Int?, discNumber: Int?, bpm: Int?, key: String?, comments: String?, rating: Int, tags: String, isHidden: Bool) {
+    init(path: String, title: String, artist: String, album: String, genre: String, year: Int?, trackNumber: Int?, discNumber: Int?, bpm: Int?, key: String?, comments: String?, rating: Int, tags: String, isHidden: Bool, playCount: Double, duration: Double) {
         self.path = path
         self.title = title
         self.artist = artist
@@ -442,6 +478,8 @@ private struct PlaceholderTrackRecord: Codable, FetchableRecord, PersistableReco
         self.rating = rating
         self.tags = tags
         self.isHidden = isHidden
+        self.playCount = playCount
+        self.duration = duration
     }
 
     init(_ data: PlaceholderTrackData) {
@@ -449,7 +487,8 @@ private struct PlaceholderTrackRecord: Codable, FetchableRecord, PersistableReco
             path: data.path, title: data.title, artist: data.artist, album: data.album, genre: data.genre,
             year: data.year, trackNumber: data.trackNumber, discNumber: data.discNumber, bpm: data.bpm,
             key: data.key, comments: data.comments, rating: data.rating,
-            tags: data.tags.joined(separator: ","), isHidden: data.isHidden
+            tags: data.tags.joined(separator: ","), isHidden: data.isHidden, playCount: data.playCount,
+            duration: data.duration
         )
     }
 }
@@ -471,6 +510,9 @@ private struct PlaylistRecord: Codable, FetchableRecord, PersistableRecord {
     /// per legacy tag instead.
     var smartRulesJSON: String?
     var trackPaths: String
+    /// `nil` for a playlist saved before this existed — see
+    /// `Playlist.updatedAt`.
+    var updatedAt: Date?
 
     enum CodingKeys: String, CodingKey {
         case id, name
@@ -479,6 +521,7 @@ private struct PlaylistRecord: Codable, FetchableRecord, PersistableRecord {
         case smartTags = "smart_tags"
         case smartRulesJSON = "smart_rules_json"
         case trackPaths = "track_paths"
+        case updatedAt = "updated_at"
     }
 
     /// Decodes `smartRulesJSON` when present; otherwise migrates the
@@ -630,6 +673,32 @@ public final class GRDBLocalStore: RatingStore, PlaylistStore, @unchecked Sendab
                 // newer than a genuinely recent change on another machine
                 // the first time sync runs.
                 t.add(column: "rated_at", .datetime)
+            }
+        }
+        migrator.registerMigration("addPlaceholderPlayCount") { db in
+            try db.alter(table: "placeholder_tracks") { t in
+                t.add(column: "play_count", .double).notNull().defaults(to: 0)
+            }
+        }
+        migrator.registerMigration("addPlaceholderDuration") { db in
+            try db.alter(table: "placeholder_tracks") { t in
+                // Needed so a synced placeholder's fingerprint (which
+                // includes duration) round-trips correctly — see
+                // `PlaceholderTrackData.duration`.
+                t.add(column: "duration", .double).notNull().defaults(to: 0)
+            }
+        }
+        migrator.registerMigration("addPlaylistUpdatedAt") { db in
+            try db.alter(table: "playlists") { t in
+                // Same reasoning as `addRatedAt`: no default for existing
+                // rows, so an untimestamped playlist doesn't look
+                // artificially "just edited" the first time it syncs.
+                t.add(column: "updated_at", .datetime)
+            }
+        }
+        migrator.registerMigration("createExcludedPlaylists") { db in
+            try db.create(table: "excluded_playlists") { t in
+                t.column("id", .text).notNull().primaryKey()
             }
         }
         return migrator
@@ -812,7 +881,8 @@ public final class GRDBLocalStore: RatingStore, PlaylistStore, @unchecked Sendab
                 isSmart: record.isSmart,
                 smartMatchAll: record.smartMatchAll,
                 smartRules: record.smartRules,
-                trackPaths: record.trackPaths.isEmpty ? [] : record.trackPaths.components(separatedBy: "\n")
+                trackPaths: record.trackPaths.isEmpty ? [] : record.trackPaths.components(separatedBy: "\n"),
+                updatedAt: record.updatedAt
             )
         }
     }
@@ -826,7 +896,8 @@ public final class GRDBLocalStore: RatingStore, PlaylistStore, @unchecked Sendab
                 smartMatchAll: playlist.smartMatchAll,
                 smartTags: "",
                 smartRulesJSON: PlaylistRecord.encodeRules(playlist.smartRules),
-                trackPaths: playlist.trackPaths.joined(separator: "\n")
+                trackPaths: playlist.trackPaths.joined(separator: "\n"),
+                updatedAt: playlist.updatedAt
             )
             try record.save(db)
         }
@@ -837,6 +908,19 @@ public final class GRDBLocalStore: RatingStore, PlaylistStore, @unchecked Sendab
             _ = try PlaylistRecord.deleteOne(db, key: id.uuidString)
         }
     }
+
+    public func excludedPlaylistIDs() async throws -> Set<UUID> {
+        let records = try await dbQueue.read { db in
+            try ExcludedPlaylistRecord.fetchAll(db)
+        }
+        return Set(records.compactMap { UUID(uuidString: $0.id) })
+    }
+
+    public func excludePlaylist(id: UUID) async throws {
+        try await dbQueue.write { db in
+            try ExcludedPlaylistRecord(id: id.uuidString).save(db)
+        }
+    }
 }
 
 public actor InMemoryLocalStore: RatingStore, PlaylistStore {
@@ -845,6 +929,7 @@ public actor InMemoryLocalStore: RatingStore, PlaylistStore {
     private var artworkOverrides: [String: Data] = [:]
     private var placeholderTracks: [String: PlaceholderTrackData] = [:]
     private var excludedPathsStorage: Set<String> = []
+    private var excludedPlaylistIDsStorage: Set<UUID> = []
     private var learnSessions: [String: LearnSessionData] = [:]
 
     public init() {}
@@ -958,5 +1043,13 @@ public actor InMemoryLocalStore: RatingStore, PlaylistStore {
 
     public func deletePlaylist(id: UUID) async throws {
         playlists[id] = nil
+    }
+
+    public func excludedPlaylistIDs() async throws -> Set<UUID> {
+        excludedPlaylistIDsStorage
+    }
+
+    public func excludePlaylist(id: UUID) async throws {
+        excludedPlaylistIDsStorage.insert(id)
     }
 }

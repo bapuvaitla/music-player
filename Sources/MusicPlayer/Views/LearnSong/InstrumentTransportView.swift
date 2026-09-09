@@ -6,9 +6,10 @@ import MusicPlayerKit
 /// entirely independent of the song's own playback. Sits above the score
 /// now (the primary controls for practicing), so sized up accordingly.
 /// Play/pause, rewind to start, back/forward one bar (from the sequence's
-/// own measure boundaries), and volume stay on the main row; practice
-/// speed (which slows playback down without changing pitch) is tucked
-/// behind a small icon since it's reached far less often.
+/// own measure boundaries), and volume live here; practice speed (which
+/// slows playback down without changing pitch) lives in the "Play
+/// Along"/"Sing Along" row instead (`RecordEvaluateControl`) — it matters
+/// most exactly when you're about to play or sing along with the take.
 struct InstrumentTransportView: View {
     @ObservedObject var engine: NotePlaybackEngine
     let sequence: NoteSequence
@@ -27,8 +28,6 @@ struct InstrumentTransportView: View {
     /// for the two guitar staves — hidden there rather than shown as a
     /// dead-feeling no-op button.
     var showsTuner: Bool = true
-
-    @State private var showingSpeedPopover = false
 
     var body: some View {
         // Grouped into tight clusters (playback / volume) with generous
@@ -94,37 +93,6 @@ struct InstrumentTransportView: View {
                 Image(systemName: "speaker.wave.3.fill")
                     .font(.system(size: 13))
                     .foregroundStyle(.secondary)
-            }
-
-            Button {
-                showingSpeedPopover = true
-            } label: {
-                Image(systemName: "speedometer")
-                    .font(.system(size: 16))
-            }
-            .buttonStyle(.plain)
-            .foregroundStyle(engine.playbackRate != 1.0 ? Color.primary : Color.secondary)
-            .help("Practice speed")
-            .popover(isPresented: $showingSpeedPopover, arrowEdge: .bottom) {
-                HStack(spacing: 8) {
-                    Text("Speed")
-                        .font(.body)
-                        .foregroundStyle(.secondary)
-                    Slider(
-                        value: Binding(
-                            get: { engine.playbackRate },
-                            set: { engine.playbackRate = $0 }
-                        ),
-                        in: 0.25...1.25
-                    )
-                    .frame(width: 140)
-                    Text("\(Int((engine.playbackRate * 100).rounded()))%")
-                        .font(.body)
-                        .monospacedDigit()
-                        .foregroundStyle(.secondary)
-                        .frame(width: 42, alignment: .leading)
-                }
-                .padding(14)
             }
 
             if showsTuner {

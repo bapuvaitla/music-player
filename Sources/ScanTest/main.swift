@@ -4,6 +4,18 @@ import MusicPlayerKit
 
 setbuf(stdout, nil)
 
+// LibraryModel persists a handful of things (scannedFolderPaths,
+// additionalTrackPaths, column layout, etc.) to UserDefaults.standard,
+// which — unlike the scratch SQLite/JSON files this suite creates fresh
+// each run — is a real, persistent, global store that survives across
+// separate `swift run ScanTest` invocations. Without resetting it here,
+// a relaunch-persistence assertion further down would silently
+// accumulate stale paths from every previous run of this binary on this
+// machine.
+for key in ["scannedFolderPaths", "additionalTrackPaths"] {
+    UserDefaults.standard.removeObject(forKey: key)
+}
+
 func makeTestPNG(size: NSSize, color: NSColor) -> Data {
     let image = NSImage(size: size)
     image.lockFocus()
@@ -231,7 +243,12 @@ Task { @MainActor in
 
     // MARK: - Importing individual files (not a whole folder) — a separate
     // library instance so this doesn't interact with the folder-merge
-    // tracks above.
+    // tracks above. Reset the shared-UserDefaults keys first (see the
+    // file-top note) so the relaunch check below isn't contaminated by
+    // `library`'s addFolder calls just above.
+    for key in ["scannedFolderPaths", "additionalTrackPaths"] {
+        UserDefaults.standard.removeObject(forKey: key)
+    }
     let filesStore = try! GRDBLocalStore(databaseURL: URL(fileURLWithPath: NSTemporaryDirectory() + "regressiontest-files-\(UUID().uuidString).sqlite"))
     let filesLibrary = LibraryModel(ratingStore: filesStore, playlistStore: filesStore)
     let pickedFiles = [
@@ -249,6 +266,17 @@ Task { @MainActor in
     check(!filesLibrary.scannedFolderPaths.contains(rockDir.appendingPathComponent("AlbumA").path), "importing a file shouldn't register its parent folder as watched")
     check(!filesLibrary.scannedFolderPaths.contains(jazzDir.appendingPathComponent("AlbumB").path), "importing a file shouldn't register its parent folder as watched")
     print("PASS: import individual files without a folder (\(importedCount) tracks)")
+
+    // MARK: - Regression: individually-added files must survive a
+    // relaunch. Previously only `addFolder`'s folders were remembered
+    // (`scannedFolderPaths`) — anything added via `addFiles` (or, later,
+    // `importKnownTracks`) vanished from the tracklist the moment the app
+    // restarted, since `rescanAllFolders()` rebuilds `tracks` from
+    // scratch at launch with nothing telling it to re-find these files.
+    let relaunchedFilesLibrary = LibraryModel(ratingStore: filesStore, playlistStore: filesStore)
+    await relaunchedFilesLibrary.rescanAllFolders()
+    check(relaunchedFilesLibrary.visibleTracks.count == 2, "individually-added files should survive a relaunch (simulated: a fresh LibraryModel over the same store), got \(relaunchedFilesLibrary.visibleTracks.count)")
+    print("PASS: addFiles-imported tracks survive a relaunch")
 
     guard let m4aTrack = library.visibleTracks.first(where: { $0.path.hasSuffix(".m4a") }) else {
         fail("need an m4a test track with artwork")
@@ -805,6 +833,195 @@ Task { @MainActor in
     print("PASS: iCloudSyncService resolves a rating conflict via last-write-wins")
 
     try? FileManager.default.removeItem(at: syncFileURL)
+
+    // MARK: - importKnownTracks: scans a folder but keeps only files whose
+    // fingerprint is already known from the iCloud sync catalog — lets a
+    // second machine mirror what's catalogued elsewhere out of a larger
+    // local folder without re-importing everything in it (see
+    // iCloudSyncService.knownFingerprints / LibraryModel.importKnownTracks).
+    let knownTracksSyncURL = URL(fileURLWithPath: NSTemporaryDirectory() + "regressiontest-knowntracks-\(UUID().uuidString).json")
+
+    // Reset again (see the file-top UserDefaults note) so the relaunch
+    // check below isn't contaminated by the addFiles section above.
+    for key in ["scannedFolderPaths", "additionalTrackPaths"] {
+        UserDefaults.standard.removeObject(forKey: key)
+    }
+    let importKnownStore = InMemoryLocalStore()
+    let importKnownLibrary = LibraryModel(ratingStore: importKnownStore, playlistStore: importKnownStore)
+    let noCatalogCount = await importKnownLibrary.importKnownTracks(from: rockDir, fileURL: knownTracksSyncURL)
+    check(noCatalogCount == 0, "with no synced catalog yet, nothing should be imported, got \(noCatalogCount)")
+
+    // Seed the catalog the way a real "other machine" would: sync a track
+    // that shares Rock/AlbumA's "Track One" fingerprint but lives at a
+    // different (that machine's own) path.
+    let rockScan = await LibraryScanner.scan(rootURL: rockDir)
+    check(rockScan.count == 2, "expected 2 fixture tracks in Rock/AlbumA, got \(rockScan.count)")
+    guard let trackOne = rockScan.first(where: { $0.title == "Track One" }) else {
+        fail("expected to find 'Track One' among the Rock fixtures")
+    }
+    let otherMachineTrack = Track(path: "/otherMachine/Track One.m4a", title: trackOne.title, artist: trackOne.artist, album: trackOne.album, genre: trackOne.genre, duration: trackOne.duration)
+    check(otherMachineTrack.syncFingerprint == trackOne.syncFingerprint, "constructed fixture should share a fingerprint with the real Rock/AlbumA file")
+    let otherMachineStore = InMemoryLocalStore()
+    try? await otherMachineStore.setRating(8, forPath: otherMachineTrack.path)
+    try? await otherMachineStore.addPartialPlay(4.0, forPath: otherMachineTrack.path)
+    _ = try? await iCloudSyncService.sync(tracks: [otherMachineTrack], store: otherMachineStore, fileURL: knownTracksSyncURL)
+
+    let known = iCloudSyncService.knownFingerprints(fileURL: knownTracksSyncURL)
+    check(known.contains(trackOne.syncFingerprint), "knownFingerprints should include the fingerprint just synced from the other machine")
+    print("PASS: iCloudSyncService.knownFingerprints reflects the synced catalog")
+
+    let matchedKnownTrackCount = await importKnownLibrary.importKnownTracks(from: rockDir, fileURL: knownTracksSyncURL)
+    check(matchedKnownTrackCount == 1, "only 'Track One' should match the known catalog, got \(matchedKnownTrackCount)")
+    check(importKnownLibrary.visibleTracks.map { $0.title } == ["Track One"], "the imported track should be Track One, got \(importKnownLibrary.visibleTracks.map { $0.title })")
+    print("PASS: LibraryModel.importKnownTracks imports only files matching the iCloud sync catalog")
+
+    let importedTrackOne = importKnownLibrary.visibleTracks.first(where: { $0.title == "Track One" })
+    check(importedTrackOne?.rating == 8, "a newly-matched track should pick up the rating already known from the catalog, got \(String(describing: importedTrackOne?.rating))")
+    check(importedTrackOne?.playCount == 4.0, "a newly-matched track should pick up the play count already known from the catalog, got \(String(describing: importedTrackOne?.playCount))")
+    print("PASS: LibraryModel.importKnownTracks applies the catalog's rating/play count to newly-matched tracks")
+
+    // MARK: - Regression: importKnownTracks' matches must survive a
+    // relaunch too, same as addFiles above — the folder it scanned is
+    // deliberately *not* added to `scannedFolderPaths` (a plain rescan of
+    // a large personal-archive folder would defeat the whole point of
+    // matching only known tracks), so each matched file's own path needs
+    // to be remembered individually instead.
+    let relaunchedImportKnownLibrary = LibraryModel(ratingStore: importKnownStore, playlistStore: importKnownStore)
+    await relaunchedImportKnownLibrary.rescanAllFolders()
+    check(relaunchedImportKnownLibrary.visibleTracks.map { $0.title } == ["Track One"], "importKnownTracks' matches should survive a relaunch, got \(relaunchedImportKnownLibrary.visibleTracks.map { $0.title })")
+    print("PASS: importKnownTracks-imported tracks survive a relaunch")
+
+    try? FileManager.default.removeItem(at: knownTracksSyncURL)
+
+    // MARK: - Backward compatibility: a snapshot file written before
+    // `playlists`/`metadata` existed (this user has a real one with
+    // hundreds of entries already) must still decode correctly — a
+    // missing key, not corrupted data — so a sync never looks like
+    // "start from empty" and silently drops every fingerprint this
+    // machine doesn't have locally on its next write.
+    let oldShapeSyncURL = URL(fileURLWithPath: NSTemporaryDirectory() + "regressiontest-oldshape-\(UUID().uuidString).json")
+    let oldShapeFingerprint = "old song|old artist|old album|200"
+    let oldShapeJSON = """
+    {
+      "entries": {
+        "\(oldShapeFingerprint)": {"rating": 7, "playCount": 2.5}
+      },
+      "updatedAt": "2024-01-01T00:00:00.000Z"
+    }
+    """
+    try? oldShapeJSON.write(to: oldShapeSyncURL, atomically: true, encoding: .utf8)
+
+    let oldShapeKnownBeforeSync = iCloudSyncService.knownFingerprints(fileURL: oldShapeSyncURL)
+    check(oldShapeKnownBeforeSync.contains(oldShapeFingerprint), "an old-shape snapshot (no playlists/metadata keys) should still decode its entries, got \(oldShapeKnownBeforeSync)")
+
+    let oldShapeStore = InMemoryLocalStore()
+    _ = try? await iCloudSyncService.sync(tracks: [], store: oldShapeStore, fileURL: oldShapeSyncURL)
+    let oldShapeKnownAfterSync = iCloudSyncService.knownFingerprints(fileURL: oldShapeSyncURL)
+    check(oldShapeKnownAfterSync.contains(oldShapeFingerprint), "syncing against an old-shape file (with no local tracks of its own) must not drop the pre-existing entry, got \(oldShapeKnownAfterSync)")
+    print("PASS: an old-shape sync.json (no playlists/metadata keys) decodes without losing entries")
+
+    try? FileManager.default.removeItem(at: oldShapeSyncURL)
+
+    // MARK: - Synced placeholders: a fingerprint known from the catalog
+    // but with no local file shows up as a grayed-out placeholder (see
+    // iCloudSyncService.syncedPlaceholderPathPrefix / Track.isPlaceholder)
+    // instead of not appearing at all, and gets promoted to a real track
+    // the moment a matching local file does show up.
+    let placeholderSyncURL = URL(fileURLWithPath: NSTemporaryDirectory() + "regressiontest-placeholder-\(UUID().uuidString).json")
+
+    let onlyOnATrack = Track(path: "/machineA/Music/OnlyOnA.m4a", title: "Only On A", artist: "Placeholder Artist", album: "Placeholder Album", genre: "Rock", duration: 210)
+    let machineAPlaceholderStore = InMemoryLocalStore()
+    try? await machineAPlaceholderStore.setRating(9, forPath: onlyOnATrack.path)
+    try? await machineAPlaceholderStore.addPartialPlay(3.0, forPath: onlyOnATrack.path)
+    _ = try? await iCloudSyncService.sync(tracks: [onlyOnATrack], store: machineAPlaceholderStore, fileURL: placeholderSyncURL)
+
+    let machineBPlaceholderStore = InMemoryLocalStore()
+    _ = try? await iCloudSyncService.sync(tracks: [], store: machineBPlaceholderStore, fileURL: placeholderSyncURL)
+    let placeholdersOnB = (try? await machineBPlaceholderStore.allPlaceholderTracks()) ?? []
+    check(placeholdersOnB.count == 1, "machine B should get exactly one synced placeholder for the fingerprint it has no local file for, got \(placeholdersOnB.count)")
+    let syncedPlaceholder = placeholdersOnB.first
+    check(syncedPlaceholder?.path.hasPrefix(iCloudSyncService.syncedPlaceholderPathPrefix) == true, "a synced placeholder's path should carry the synced-placeholder prefix, got \(String(describing: syncedPlaceholder?.path))")
+    check(syncedPlaceholder?.title == "Only On A", "the placeholder should carry the catalog's title, got \(String(describing: syncedPlaceholder?.title))")
+    check(syncedPlaceholder?.rating == 9, "the placeholder should carry the catalog's rating, got \(String(describing: syncedPlaceholder?.rating))")
+    check(syncedPlaceholder?.playCount == 3.0, "the placeholder should carry the catalog's play count, got \(String(describing: syncedPlaceholder?.playCount))")
+    check(syncedPlaceholder?.duration == 210, "the placeholder should preserve duration for correct fingerprint round-tripping, got \(String(describing: syncedPlaceholder?.duration))")
+    print("PASS: a fingerprint with no local file syncs in as a grayed-out placeholder")
+
+    let onlyOnATrackOnB = Track(path: "/machineB/Music/OnlyOnA.m4a", title: "Only On A", artist: "Placeholder Artist", album: "Placeholder Album", genre: "Rock", duration: 210)
+    check(onlyOnATrackOnB.syncFingerprint == onlyOnATrack.syncFingerprint, "sanity: the two machines' copies of the same song should share a fingerprint")
+    _ = try? await iCloudSyncService.sync(tracks: [onlyOnATrackOnB], store: machineBPlaceholderStore, fileURL: placeholderSyncURL)
+    let placeholdersAfterPromotion = (try? await machineBPlaceholderStore.allPlaceholderTracks()) ?? []
+    check(placeholdersAfterPromotion.isEmpty, "the placeholder should be removed once a real local file matches its fingerprint, got \(placeholdersAfterPromotion.count) remaining")
+    let ratingsAfterPromotion = (try? await machineBPlaceholderStore.allRatings()) ?? [:]
+    check(ratingsAfterPromotion[onlyOnATrackOnB.path]?.rating == 9, "the real, promoted track should carry the rating the placeholder had, got \(String(describing: ratingsAfterPromotion[onlyOnATrackOnB.path]?.rating))")
+    check(ratingsAfterPromotion[onlyOnATrackOnB.path]?.playCount == 3.0, "the real, promoted track should carry the play count the placeholder had, got \(String(describing: ratingsAfterPromotion[onlyOnATrackOnB.path]?.playCount))")
+    print("PASS: a placeholder is promoted to a real track once a matching local file appears")
+
+    try? FileManager.default.removeItem(at: placeholderSyncURL)
+
+    // MARK: - Playlist sync: a regular playlist's ordered tracks travel by
+    // fingerprint (never by path, which means nothing on another
+    // machine), resolving to whatever local Track — real file or
+    // placeholder — shares that fingerprint; a smart playlist just
+    // carries its rules across, no fingerprints needed since rules match
+    // on track fields directly.
+    let playlistSyncURL = URL(fileURLWithPath: NSTemporaryDirectory() + "regressiontest-playlistsync-\(UUID().uuidString).json")
+
+    let playlistTrackA = Track(path: "/machineA/Music/PlaylistSong.m4a", title: "Playlist Song", artist: "Playlist Artist", album: "Playlist Album", genre: "Pop", duration: 150)
+    let playlistSeedStoreA = InMemoryLocalStore()
+    _ = try? await iCloudSyncService.sync(tracks: [playlistTrackA], store: playlistSeedStoreA, fileURL: playlistSyncURL)
+
+    let regularPlaylistA = Playlist(name: "Road Trip", trackPaths: [playlistTrackA.path])
+    let smartPlaylistA = Playlist(name: "High Rated", isSmart: true, smartMatchAll: true, smartRules: [SmartRule(field: .rating, comparison: .greaterThanOrEqual, value: "8")])
+    try? await iCloudSyncService.syncPlaylists(
+        playlists: [regularPlaylistA, smartPlaylistA], tracks: [playlistTrackA], store: playlistSeedStoreA,
+        excludedPlaylistIDs: [], fileURL: playlistSyncURL
+    )
+
+    // Machine B has no local file for playlistTrackA — sync tracks first
+    // (so B gets a placeholder for its fingerprint), then playlists.
+    let playlistStoreB = InMemoryLocalStore()
+    _ = try? await iCloudSyncService.sync(tracks: [], store: playlistStoreB, fileURL: playlistSyncURL)
+    let bPlaceholders = (try? await playlistStoreB.allPlaceholderTracks()) ?? []
+    guard let bPlaceholderForPlaylistTrack = bPlaceholders.first(where: { $0.title == "Playlist Song" }) else {
+        fail("machine B should have a synced placeholder for the playlist's track")
+    }
+    let bPlaceholderTrack = Track(
+        path: bPlaceholderForPlaylistTrack.path, title: bPlaceholderForPlaylistTrack.title,
+        artist: bPlaceholderForPlaylistTrack.artist, album: bPlaceholderForPlaylistTrack.album,
+        genre: bPlaceholderForPlaylistTrack.genre, duration: bPlaceholderForPlaylistTrack.duration
+    )
+    try? await iCloudSyncService.syncPlaylists(
+        playlists: [], tracks: [bPlaceholderTrack], store: playlistStoreB,
+        excludedPlaylistIDs: [], fileURL: playlistSyncURL
+    )
+    let playlistsOnB = (try? await playlistStoreB.allPlaylists()) ?? []
+    let regularOnB = playlistsOnB.first(where: { $0.id == regularPlaylistA.id })
+    check(regularOnB?.trackPaths == [bPlaceholderForPlaylistTrack.path], "machine B's copy of the regular playlist should resolve its one track to B's placeholder path, got \(String(describing: regularOnB?.trackPaths))")
+    let smartOnB = playlistsOnB.first(where: { $0.id == smartPlaylistA.id })
+    check(smartOnB?.isSmart == true && smartOnB?.smartRules == smartPlaylistA.smartRules, "machine B should receive the smart playlist's rules as-is, got \(String(describing: smartOnB))")
+    print("PASS: playlists sync by fingerprint, resolving to a placeholder when the file isn't local")
+
+    // MARK: - Playlist deletion stays local-only (by design — see
+    // iCloudSyncService.syncPlaylists's doc comment): deleting a playlist
+    // must not have its own next sync resurrect it from the shared
+    // catalog before the deletion has any chance to reach the other
+    // machine too.
+    // Mirrors LibraryModel.deletePlaylist: remove the local row, and
+    // record the exclusion, exactly as machine A would after the user
+    // deletes it there.
+    try? await playlistSeedStoreA.deletePlaylist(id: regularPlaylistA.id)
+    try? await playlistSeedStoreA.excludePlaylist(id: regularPlaylistA.id)
+    let excludedIDsA = (try? await playlistSeedStoreA.excludedPlaylistIDs()) ?? []
+    try? await iCloudSyncService.syncPlaylists(
+        playlists: [smartPlaylistA], tracks: [playlistTrackA], store: playlistSeedStoreA,
+        excludedPlaylistIDs: excludedIDsA, fileURL: playlistSyncURL
+    )
+    let playlistsOnAAfterDelete = (try? await playlistSeedStoreA.allPlaylists()) ?? []
+    check(!playlistsOnAAfterDelete.contains(where: { $0.id == regularPlaylistA.id }), "a locally-deleted playlist should not be resurrected by this machine's own next sync, got \(playlistsOnAAfterDelete.map(\.name))")
+    print("PASS: a locally-deleted playlist isn't resurrected by this machine's own sync")
+
+    try? FileManager.default.removeItem(at: playlistSyncURL)
 
     // MARK: - Media key controller: construct it, play a track with
     // embedded artwork, and drive the artwork-loading + state-change paths
