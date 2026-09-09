@@ -1,6 +1,6 @@
 # Music Player
 
-A native macOS music player built with SwiftUI and AVFoundation. Points at folders of local audio files and plays them — no library import, no cloud sync, no telemetry. Ratings, tags, and edits are stored locally in SQLite and are never written back to your audio files.
+A native macOS music player built with SwiftUI and AVFoundation. Points at folders of local audio files and plays them — no library import, no telemetry. Ratings, tags, and edits are stored locally in SQLite and are never written back to your audio files. Optionally syncs ratings and play counts (not the audio files themselves) between your own Macs via iCloud Drive.
 
 ## Features
 
@@ -50,6 +50,10 @@ This builds a release binary and assembles `Build/Music Player.app`, ready to dr
 ## Data storage
 
 Ratings, tags, hidden/deleted state, metadata overrides, artwork overrides, playlists, and placeholder tracks live in a local SQLite database at `~/Library/Application Support/MusicPlayer/library.sqlite`, managed via [GRDB.swift](https://github.com/groue/GRDB.swift). None of this ever touches your audio files.
+
+### Syncing across machines
+
+If you run the app on more than one Mac against separately-scanned copies of the same music, ratings and play counts can sync between them via a small JSON snapshot in iCloud Drive (`~/Library/Mobile Documents/com~apple~CloudDocs/MusicPlayerSync/`) — not the audio files, and not the rest of the local database. Tracks are matched by title/artist/album/duration, not file path, since each machine's folder layout can differ. Runs automatically on launch, or on demand via File > Sync Ratings & Plays via iCloud.
 
 ## License
 
