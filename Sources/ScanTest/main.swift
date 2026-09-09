@@ -638,8 +638,12 @@ Task { @MainActor in
     let attachFileLibrary = LibraryModel(ratingStore: attachFileStore, playlistStore: attachFileStore)
     let attachPlaceholder = attachFileLibrary.createPlaceholderTrack(album: "Some Unowned Album")
     attachFileLibrary.setRating(7, for: attachPlaceholder)
+    // Deliberately a different title than the file we'll attach actually
+    // has ("Track One") — attaching should force this exact wording onto
+    // the new real track (see attachFile's doc comment: the act of
+    // attaching *is* the confirmation, not a text/duration heuristic).
     attachFileLibrary.updateMetadata(
-        for: attachPlaceholder, title: attachPlaceholder.title, artist: attachPlaceholder.artist,
+        for: attachPlaceholder, title: "Track One (Special Edition)", artist: attachPlaceholder.artist,
         album: attachPlaceholder.album, genre: attachPlaceholder.genre,
         year: nil, trackNumber: nil, discNumber: nil, bpm: nil, key: "", comments: "", tags: ["favorite"]
     )
@@ -658,6 +662,7 @@ Task { @MainActor in
     }
     check(!attachedTrack.isPlaceholder, "the attached track should no longer be a placeholder")
     check(attachedTrack.path == fileToAttach.path, "the attached track's path should be the picked file's path, got \(attachedTrack.path)")
+    check(attachedTrack.title == "Track One (Special Edition)", "attaching should force the placeholder's exact title onto the new track even though the file's own tag says something else, got \(attachedTrack.title)")
     check(attachedTrack.rating == 7, "the attached track should carry over the placeholder's rating, got \(attachedTrack.rating)")
     check(attachedTrack.tags == ["favorite"], "the attached track should carry over the placeholder's tags, got \(attachedTrack.tags)")
     check(!attachFileLibrary.tracks.contains { $0.path == editedAttachPlaceholder.path }, "the old placeholder entry should be gone")
@@ -940,6 +945,93 @@ Task { @MainActor in
     print("PASS: importKnownTracks-imported tracks survive a relaunch")
 
     try? FileManager.default.removeItem(at: knownTracksSyncURL)
+
+    // MARK: - Fuzzy fingerprint matching: the same song tagged
+    // differently on two machines (a featured-artist credit in a
+    // different field, an abridged album subtitle) should still be
+    // recognized as one track — but two genuinely different songs that
+    // happen to share a duration must NOT match, since duration alone is
+    // far too weak a signal on its own.
+    let creditMetadata = iCloudSyncService.TrackMetadata(
+        title: "Concrete Jungle (w/ Rakim)", artist: "Bob Marley & The Wailers", album: "Chant Down Babylon",
+        genre: "Reggae", duration: 252, year: nil, trackNumber: nil, discNumber: nil, bpm: nil, key: nil, comments: nil, tags: []
+    )
+    check(
+        iCloudSyncService.fuzzyMatch(title: "Concrete Jungle", artist: "Bob Marley & The Wailers feat. Rakim", album: "Chant Down Babylon", duration: 252.07, metadata: creditMetadata),
+        "a featured-artist credit sitting in the title on one machine and the artist field on the other should still fuzzy-match"
+    )
+
+    let albumSubtitleMetadata = iCloudSyncService.TrackMetadata(
+        title: "Clandestino", artist: "Manu Chao", album: "Clandestino: Esperando la Última Ola",
+        genre: "World", duration: 147, year: nil, trackNumber: nil, discNumber: nil, bpm: nil, key: nil, comments: nil, tags: []
+    )
+    check(
+        iCloudSyncService.fuzzyMatch(title: "Clandestino", artist: "Manu Chao", album: "Clandestino", duration: 146.65, metadata: albumSubtitleMetadata),
+        "an abridged album subtitle on one machine should still fuzzy-match the full subtitle on the other"
+    )
+
+    check(
+        !iCloudSyncService.fuzzyMatch(title: "A Completely Different Song", artist: "Some Other Band", album: "Some Other Album", duration: 252, metadata: creditMetadata),
+        "two genuinely different songs must not fuzzy-match just because they happen to share a duration"
+    )
+    check(
+        !iCloudSyncService.fuzzyMatch(title: "Concrete Jungle", artist: "Bob Marley & The Wailers feat. Rakim", album: "Chant Down Babylon", duration: 400, metadata: creditMetadata),
+        "matching title/artist/album shouldn't be enough on its own if the duration is wildly different (e.g. a live version)"
+    )
+    print("PASS: iCloudSyncService.fuzzyMatch recognizes retagged duplicates without conflating unrelated same-length songs")
+
+    // MARK: - importKnownTracks + fuzzy matching: a locally-scanned file
+    // tagged differently than the catalog should still import, with the
+    // catalog's exact wording locked in as an override so the fingerprint
+    // matches exactly from now on instead of depending on the fuzzy
+    // fallback every sync.
+    let fuzzyImportSyncURL = URL(fileURLWithPath: NSTemporaryDirectory() + "regressiontest-fuzzyimport-\(UUID().uuidString).json")
+    let realTrackOneScan = await LibraryScanner.scan(rootURL: rockDir)
+    guard let realTrackOne = realTrackOneScan.first(where: { $0.title == "Track One" }) else {
+        fail("expected to find 'Track One' among the Rock fixtures")
+    }
+    let otherMachineCreditTrack = Track(
+        path: "/otherMachine/Track One.m4a", title: "Track One (w/ Someone)", artist: realTrackOne.artist,
+        album: realTrackOne.album, genre: realTrackOne.genre, duration: realTrackOne.duration
+    )
+    let fuzzyImportSeedStore = InMemoryLocalStore()
+    _ = try? await iCloudSyncService.sync(tracks: [otherMachineCreditTrack], store: fuzzyImportSeedStore, fileURL: fuzzyImportSyncURL)
+
+    let fuzzyImportStore = InMemoryLocalStore()
+    let fuzzyImportLibrary = LibraryModel(ratingStore: fuzzyImportStore, playlistStore: fuzzyImportStore)
+    let fuzzyImportedCount = await fuzzyImportLibrary.importKnownTracks(from: rockDir, fileURL: fuzzyImportSyncURL)
+    check(fuzzyImportedCount == 1, "the fuzzy-matched 'Track One' should import even though its own tag doesn't say '(w/ Someone)', got \(fuzzyImportedCount)")
+    guard let fuzzyImportedTrack = fuzzyImportLibrary.visibleTracks.first(where: { $0.path == realTrackOne.path }) else {
+        fail("expected the fuzzy-matched track to be present under its real file path")
+    }
+    check(fuzzyImportedTrack.title == "Track One (w/ Someone)", "importing a fuzzy match should lock in the catalog's exact title as an override, got \(fuzzyImportedTrack.title)")
+    check(fuzzyImportedTrack.syncFingerprint == otherMachineCreditTrack.syncFingerprint, "after the override, the imported track's fingerprint should exactly match the catalog's from now on")
+    print("PASS: importKnownTracks fuzzy-matches a retagged duplicate and locks in the catalog's wording")
+
+    try? FileManager.default.removeItem(at: fuzzyImportSyncURL)
+
+    // MARK: - Placeholder reconciliation + fuzzy matching: a machine that
+    // already has the same song under different tags shouldn't get a
+    // duplicate placeholder for the "other" fingerprint.
+    let fuzzyPlaceholderSyncURL = URL(fileURLWithPath: NSTemporaryDirectory() + "regressiontest-fuzzyplaceholder-\(UUID().uuidString).json")
+    let creditVariantTrack = Track(
+        path: "/machineA/Music/ConcreteJungle.mp3", title: "Concrete Jungle (w/ Rakim)", artist: "Bob Marley & The Wailers",
+        album: "Chant Down Babylon", genre: "Reggae", duration: 252
+    )
+    let fuzzyPlaceholderStoreA = InMemoryLocalStore()
+    _ = try? await iCloudSyncService.sync(tracks: [creditVariantTrack], store: fuzzyPlaceholderStoreA, fileURL: fuzzyPlaceholderSyncURL)
+
+    let fuzzyPlaceholderStoreB = InMemoryLocalStore()
+    let ownTaggingTrack = Track(
+        path: "/machineB/Music/ConcreteJungle.mp3", title: "Concrete Jungle", artist: "Bob Marley & The Wailers feat. Rakim",
+        album: "Chant Down Babylon", genre: "Reggae", duration: 252
+    )
+    _ = try? await iCloudSyncService.sync(tracks: [ownTaggingTrack], store: fuzzyPlaceholderStoreB, fileURL: fuzzyPlaceholderSyncURL)
+    let placeholdersOnFuzzyB = (try? await fuzzyPlaceholderStoreB.allPlaceholderTracks()) ?? []
+    check(placeholdersOnFuzzyB.isEmpty, "a machine that already has the same song under different tags shouldn't get a duplicate placeholder for it, got \(placeholdersOnFuzzyB.count)")
+    print("PASS: placeholder reconciliation recognizes a fuzzy match and skips creating a duplicate")
+
+    try? FileManager.default.removeItem(at: fuzzyPlaceholderSyncURL)
 
     // MARK: - Backward compatibility: a snapshot file written before
     // `playlists`/`metadata` existed (this user has a real one with

@@ -39,6 +39,27 @@ public enum iCloudSyncService {
         public var key: String?
         public var comments: String?
         public var tags: [String]
+
+        // The synthesized memberwise init is `internal`, invisible from
+        // outside this module (ScanTest included) — needed explicitly
+        // since callers construct this directly, not just decode it.
+        public init(
+            title: String, artist: String, album: String, genre: String, duration: TimeInterval,
+            year: Int?, trackNumber: Int?, discNumber: Int?, bpm: Int?, key: String?, comments: String?, tags: [String]
+        ) {
+            self.title = title
+            self.artist = artist
+            self.album = album
+            self.genre = genre
+            self.duration = duration
+            self.year = year
+            self.trackNumber = trackNumber
+            self.discNumber = discNumber
+            self.bpm = bpm
+            self.key = key
+            self.comments = comments
+            self.tags = tags
+        }
     }
 
     public struct SnapshotEntry: Codable, Sendable, Equatable {
@@ -144,6 +165,94 @@ public enum iCloudSyncService {
         Set(readSnapshot(at: fileURL ?? syncFileURL).entries.keys)
     }
 
+    /// The full catalog, fingerprint keys paired with whatever descriptive
+    /// metadata they carry — the richer form `fuzzyMatch` needs, since it
+    /// compares against a fingerprint's *original* title/artist/album/
+    /// duration rather than the already-lowercased, joined fingerprint
+    /// string itself. An entry with `metadata == nil` (not yet backfilled
+    /// — see `SnapshotEntry`) simply can't be fuzzy-matched against.
+    public static func knownEntries(fileURL: URL? = nil) -> [String: SnapshotEntry] {
+        readSnapshot(at: fileURL ?? syncFileURL).entries
+    }
+
+    /// A fallback for when a track's *exact* fingerprint isn't in the
+    /// catalog because the same song was tagged differently on two
+    /// machines — a featured-artist credit sitting in the title on one
+    /// side and the artist field on the other ("Concrete Jungle (w/
+    /// Rakim)" vs. "Concrete Jungle" / "... feat. Rakim"), an abridged
+    /// album subtitle ("Clandestino" vs. "Clandestino: Esperando la
+    /// Última Ola"), curly vs. straight apostrophes. Requires duration to
+    /// land within `durationTolerance` seconds *and* noise-stripped title
+    /// *and* artist to match exactly — deliberately not duration alone,
+    /// which would just as happily conflate two unrelated songs of the
+    /// same length. Album is compared more loosely still (the part
+    /// before a colon), since that's the specific variation observed.
+    /// Never used as the catalog's primary identity, only as a secondary
+    /// check when the exact fingerprint comes up empty — two machines
+    /// that already tag consistently never reach this path at all.
+    public static func fuzzyMatch(
+        title: String, artist: String, album: String, duration: TimeInterval,
+        metadata: TrackMetadata, durationTolerance: TimeInterval = 2
+    ) -> Bool {
+        guard abs(duration - metadata.duration) <= durationTolerance else { return false }
+        guard fuzzyNormalizedCredit(title) == fuzzyNormalizedCredit(metadata.title) else { return false }
+        guard fuzzyNormalizedCredit(artist) == fuzzyNormalizedCredit(metadata.artist) else { return false }
+        return fuzzyAlbumPrefix(album) == fuzzyAlbumPrefix(metadata.album)
+    }
+
+    /// Scans `entries` for one whose metadata fuzzy-matches `track` (see
+    /// `fuzzyMatch`) — the fingerprint of the first one found, or `nil`.
+    public static func fuzzyMatchingFingerprint(for track: Track, in entries: [String: SnapshotEntry]) -> String? {
+        for (fingerprint, entry) in entries {
+            guard let metadata = entry.metadata else { continue }
+            if fuzzyMatch(title: track.title, artist: track.artist, album: track.album, duration: track.duration, metadata: metadata) {
+                return fingerprint
+            }
+        }
+        return nil
+    }
+
+    /// Lowercases, normalizes curly quotes/apostrophes to straight ones,
+    /// strips a featured-artist credit specifically (never a "(Live)"/
+    /// "(Remix)"/"(Acoustic)" annotation, which denotes a genuinely
+    /// different recording — duration proximity already guards against
+    /// conflating those, since a live take's length usually differs from
+    /// the studio version by far more than a couple of seconds), and
+    /// collapses whitespace.
+    private static func fuzzyNormalizedCredit(_ s: String) -> String {
+        var result = normalizeQuotes(s).lowercased()
+        result = result.replacingOccurrences(
+            of: #"\s*[\(\[]\s*(w/|feat\.?|ft\.?|featuring)\s+[^)\]]*[\)\]]"#,
+            with: "", options: [.regularExpression, .caseInsensitive]
+        )
+        result = result.replacingOccurrences(
+            of: #"\s+(feat\.?|ft\.?|featuring|w/)\s+.+$"#,
+            with: "", options: [.regularExpression, .caseInsensitive]
+        )
+        return collapsedWhitespace(result)
+    }
+
+    /// The part of an album name before a colon, if any — "Clandestino"
+    /// and "Clandestino: Esperando la Última Ola" both reduce to
+    /// "clandestino".
+    private static func fuzzyAlbumPrefix(_ s: String) -> String {
+        let normalized = collapsedWhitespace(normalizeQuotes(s).lowercased())
+        guard let colonIndex = normalized.firstIndex(of: ":") else { return normalized }
+        return String(normalized[..<colonIndex]).trimmingCharacters(in: .whitespaces)
+    }
+
+    private static func normalizeQuotes(_ s: String) -> String {
+        s.replacingOccurrences(of: "\u{2019}", with: "'")
+            .replacingOccurrences(of: "\u{2018}", with: "'")
+            .replacingOccurrences(of: "\u{201C}", with: "\"")
+            .replacingOccurrences(of: "\u{201D}", with: "\"")
+    }
+
+    private static func collapsedWhitespace(_ s: String) -> String {
+        s.trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
+    }
+
     /// Reads whatever the other machine(s) last wrote, merges it with
     /// `tracks`' current local state, writes any locally-changed ratings/
     /// play counts back through `store`, and uploads the merged result so
@@ -230,7 +339,7 @@ public enum iCloudSyncService {
             mergedEntries[fingerprint] = entry
         }
 
-        await reconcilePlaceholders(mergedEntries: mergedEntries, localFingerprints: Set(pathsByFingerprint.keys), store: store)
+        await reconcilePlaceholders(mergedEntries: mergedEntries, localTracks: Array(representativeTrackByFingerprint.values), store: store)
 
         // `playlists` is carried forward untouched — this function knows
         // nothing about them (see `syncPlaylists`, a separate pass over
@@ -329,8 +438,9 @@ public enum iCloudSyncService {
     /// rating/play-count transfer needed for a promotion: the real file's
     /// path is already picked up by the merge loop above like any other.
     private static func reconcilePlaceholders(
-        mergedEntries: [String: SnapshotEntry], localFingerprints: Set<String>, store: RatingStore
+        mergedEntries: [String: SnapshotEntry], localTracks: [Track], store: RatingStore
     ) async {
+        let localFingerprints = Set(localTracks.map(\.syncFingerprint))
         let existingPlaceholders = (try? await store.allPlaceholderTracks()) ?? []
         let existingSyncedFingerprints = Set(
             existingPlaceholders
@@ -339,8 +449,19 @@ public enum iCloudSyncService {
                 .map { String($0.dropFirst(syncedPlaceholderPathPrefix.count)) }
         )
 
+        // A fingerprint counts as "already covered locally" either by an
+        // exact match, or by a local track that fuzzy-matches this
+        // entry's metadata (same song, tagged differently — see
+        // `fuzzyMatch`). Fuzzy-checking only runs when the exact check
+        // already failed, so two machines that tag consistently never
+        // pay for it.
+        func hasLocalMatch(fingerprint: String, metadata: TrackMetadata) -> Bool {
+            localFingerprints.contains(fingerprint)
+                || localTracks.contains { fuzzyMatch(title: $0.title, artist: $0.artist, album: $0.album, duration: $0.duration, metadata: metadata) }
+        }
+
         for (fingerprint, entry) in mergedEntries {
-            guard let metadata = entry.metadata, !localFingerprints.contains(fingerprint) else { continue }
+            guard let metadata = entry.metadata, !hasLocalMatch(fingerprint: fingerprint, metadata: metadata) else { continue }
             let data = PlaceholderTrackData(
                 path: syncedPlaceholderPathPrefix + fingerprint,
                 title: metadata.title, artist: metadata.artist, album: metadata.album, genre: metadata.genre,
@@ -352,7 +473,8 @@ public enum iCloudSyncService {
             try? await store.savePlaceholderTrack(data)
         }
 
-        for fingerprint in existingSyncedFingerprints where localFingerprints.contains(fingerprint) {
+        for fingerprint in existingSyncedFingerprints {
+            guard let metadata = mergedEntries[fingerprint]?.metadata, hasLocalMatch(fingerprint: fingerprint, metadata: metadata) else { continue }
             try? await store.deletePlaceholderTrack(path: syncedPlaceholderPathPrefix + fingerprint)
         }
     }

@@ -500,8 +500,8 @@ public final class LibraryModel: ObservableObject {
     /// rather than mid-session.
     @discardableResult
     public func importKnownTracks(from folderURL: URL, fileURL: URL? = nil) async -> Int {
-        let known = iCloudSyncService.knownFingerprints(fileURL: fileURL)
-        guard !known.isEmpty else { return 0 }
+        let knownEntries = iCloudSyncService.knownEntries(fileURL: fileURL)
+        guard !knownEntries.isEmpty else { return 0 }
 
         isScanning = true
         scanProgress = (0, 0)
@@ -513,13 +513,51 @@ public final class LibraryModel: ObservableObject {
         isScanning = false
         scanProgress = nil
 
-        let matched = scanned.filter { known.contains($0.syncFingerprint) }
+        var matched: [Track] = []
+        for var track in scanned {
+            if knownEntries.keys.contains(track.syncFingerprint) {
+                matched.append(track)
+            } else if let fingerprint = iCloudSyncService.fuzzyMatchingFingerprint(for: track, in: knownEntries),
+                      let metadata = knownEntries[fingerprint]?.metadata {
+                // Tagged differently on this machine (a featured-artist
+                // credit in a different field, an abridged album
+                // subtitle, etc. — see `iCloudSyncService.fuzzyMatch`) —
+                // lock in the catalog's exact wording so this becomes a
+                // real fingerprint match from now on, rather than
+                // depending on the fuzzy fallback on every future sync.
+                await applyCatalogMetadataOverride(metadata, to: track)
+                track.title = metadata.title
+                track.artist = metadata.artist
+                track.album = metadata.album
+                matched.append(track)
+            }
+        }
         guard !matched.isEmpty else { return 0 }
 
         rememberAdditionalTrackPaths(matched.map(\.path))
         mergeScannedTracks(matched)
         await syncWithiCloud(fileURL: fileURL)
         return matched.count
+    }
+
+    /// Overrides a real track's title/artist/album to match the iCloud
+    /// catalog's exact wording (everything else is carried through
+    /// unchanged) — used both here and by `attachFile`, whenever a
+    /// fingerprint mismatch between two machines' tagging of the same
+    /// song needs to be locked in as a match going forward.
+    private func applyCatalogMetadataOverride(title: String, artist: String, album: String, track: Track) async {
+        try? await ratingStore.setOverrides(
+            MetadataOverrides(
+                title: title, artist: artist, album: album, genre: nil,
+                year: track.year, trackNumber: track.trackNumber, discNumber: track.discNumber,
+                bpm: track.bpm, key: track.key, comments: track.comments, tags: track.tags
+            ),
+            forPath: track.path
+        )
+    }
+
+    private func applyCatalogMetadataOverride(_ metadata: iCloudSyncService.TrackMetadata, to track: Track) async {
+        await applyCatalogMetadataOverride(title: metadata.title, artist: metadata.artist, album: metadata.album, track: track)
     }
 
     private func mergeScannedTracks(_ scanned: [Track]) {
@@ -711,13 +749,27 @@ public final class LibraryModel: ObservableObject {
 
         guard let rawTrack = await LibraryScanner.scanFiles([fileURL]).first else { return nil }
         try? await ratingStore.setRating(placeholder.rating, forPath: rawTrack.path)
+        // Always overrides title/artist/album to match the placeholder
+        // exactly — not conditional on how close the file's own tags
+        // already are, since choosing to attach this specific file to
+        // this specific placeholder *is* the confirmation that it's the
+        // same song. This guarantees the new track's fingerprint matches
+        // the placeholder's going forward, the same convergence
+        // `importKnownTracks` reaches for a fuzzy match (see
+        // `applyCatalogMetadataOverride`), just driven by an explicit
+        // user action here instead of a duration/text heuristic.
         try? await ratingStore.setOverrides(
             MetadataOverrides(
-                title: nil, artist: nil, album: nil, genre: nil, year: nil, trackNumber: nil,
-                discNumber: nil, bpm: nil, key: nil, comments: nil, tags: placeholder.tags
+                title: placeholder.title, artist: placeholder.artist, album: placeholder.album, genre: nil,
+                year: rawTrack.year, trackNumber: rawTrack.trackNumber, discNumber: rawTrack.discNumber,
+                bpm: rawTrack.bpm, key: rawTrack.key, comments: rawTrack.comments, tags: placeholder.tags
             ),
             forPath: rawTrack.path
         )
+        // `applyStoredRatings` already reads the override just written
+        // above, so `newTrack.title`/`.artist`/`.album` reflect the
+        // placeholder's exact wording without needing to set them again
+        // here.
         guard let newTrack = await applyStoredRatings(to: [rawTrack]).first else { return nil }
 
         let oldPath = placeholder.path
