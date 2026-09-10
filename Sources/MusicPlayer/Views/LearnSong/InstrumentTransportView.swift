@@ -6,10 +6,14 @@ import MusicPlayerKit
 /// entirely independent of the song's own playback. Sits above the score
 /// now (the primary controls for practicing), so sized up accordingly.
 /// Play/pause, rewind to start, back/forward one bar (from the sequence's
-/// own measure boundaries), and volume live here; practice speed (which
-/// slows playback down without changing pitch) lives in the "Play
-/// Along"/"Sing Along" row instead (`RecordEvaluateControl`) — it matters
-/// most exactly when you're about to play or sing along with the take.
+/// own measure boundaries), volume, and a BPM readout live here; practice
+/// speed (which slows playback down without changing pitch) lives in the
+/// "Play Along"/"Sing Along" row instead (`RecordEvaluateControl`) — it
+/// matters most exactly when you're about to play or sing along with the
+/// take. The BPM readout tracks whatever speed is currently in effect
+/// there (see `BPMIndicator`), so it's visible on every staff without
+/// needing to open the speed popover — useful for setting a real
+/// metronome while practicing away from the computer.
 struct InstrumentTransportView: View {
     @ObservedObject var engine: NotePlaybackEngine
     let sequence: NoteSequence
@@ -94,6 +98,8 @@ struct InstrumentTransportView: View {
                     .font(.system(size: 13))
                     .foregroundStyle(.secondary)
             }
+
+            BPMIndicator(baseTempo: sequence.tempo, playbackRate: engine.playbackRate)
 
             if showsTuner {
                 Button {

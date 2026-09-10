@@ -128,6 +128,11 @@ struct FullScoreView: View {
                     .foregroundStyle(.secondary)
             }
 
+            // No speed control here (see the type's own doc comment on
+            // why this transport is lighter than the practice panes'), so
+            // this always shows the file's plain base tempo.
+            BPMIndicator(baseTempo: longestPartSequence.tempo)
+
             Button {
                 showingTuner = true
             } label: {

@@ -128,23 +128,35 @@ struct RecordEvaluateControl: View {
             .disabled(isRecordingSession)
             .help("Practice speed")
             .popover(isPresented: $showingSpeedPopover, arrowEdge: .bottom) {
-                HStack(spacing: 8) {
-                    Text("Speed")
-                        .font(.body)
-                        .foregroundStyle(.secondary)
-                    Slider(
-                        value: Binding(
-                            get: { engine.playbackRate },
-                            set: { engine.playbackRate = $0 }
-                        ),
-                        in: 0.25...1.25
-                    )
-                    .frame(width: 140)
-                    Text("\(Int((engine.playbackRate * 100).rounded()))%")
-                        .font(.body)
-                        .monospacedDigit()
-                        .foregroundStyle(.secondary)
-                        .frame(width: 42, alignment: .leading)
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack(spacing: 8) {
+                        Text("Speed")
+                            .font(.body)
+                            .foregroundStyle(.secondary)
+                        Slider(
+                            value: Binding(
+                                get: { engine.playbackRate },
+                                set: { engine.playbackRate = $0 }
+                            ),
+                            in: 0.25...1.25
+                        )
+                        .frame(width: 140)
+                        Text("\(Int((engine.playbackRate * 100).rounded()))%")
+                            .font(.body)
+                            .monospacedDigit()
+                            .foregroundStyle(.secondary)
+                            .frame(width: 42, alignment: .leading)
+                    }
+                    // What that percentage actually means for a real
+                    // metronome — the whole point of showing it here
+                    // rather than making you do the math from the
+                    // percentage yourself.
+                    HStack(spacing: 4) {
+                        Text("→")
+                            .foregroundStyle(.secondary)
+                        BPMIndicator(baseTempo: sequence.tempo, playbackRate: engine.playbackRate)
+                    }
+                    .font(.body)
                 }
                 .padding(14)
             }
