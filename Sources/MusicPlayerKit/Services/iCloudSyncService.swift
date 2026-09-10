@@ -181,15 +181,19 @@ public enum iCloudSyncService {
     /// side and the artist field on the other ("Concrete Jungle (w/
     /// Rakim)" vs. "Concrete Jungle" / "... feat. Rakim"), an abridged
     /// album subtitle ("Clandestino" vs. "Clandestino: Esperando la
-    /// Última Ola"), curly vs. straight apostrophes. Requires duration to
-    /// land within `durationTolerance` seconds *and* noise-stripped title
-    /// *and* artist to match exactly — deliberately not duration alone,
-    /// which would just as happily conflate two unrelated songs of the
-    /// same length. Album is compared more loosely still (the part
-    /// before a colon), since that's the specific variation observed.
-    /// Never used as the catalog's primary identity, only as a secondary
-    /// check when the exact fingerprint comes up empty — two machines
-    /// that already tag consistently never reach this path at all.
+    /// Última Ola"), a reissue/edition suffix with no consistent
+    /// punctuation at all ("Rage Against the Machine" vs. "Rage Against
+    /// the Machine XX" — a 20th-anniversary edition), curly vs. straight
+    /// apostrophes. Requires duration to land within `durationTolerance`
+    /// seconds *and* noise-stripped title *and* artist to match exactly —
+    /// deliberately not duration alone, which would just as happily
+    /// conflate two unrelated songs of the same length. Album is compared
+    /// more loosely still (one name is a prefix of the other — see
+    /// `fuzzyAlbumsMatch`), since album-edition suffixes show up in every
+    /// shape and none reliably. Never used as the catalog's primary
+    /// identity, only as a secondary check when the exact fingerprint
+    /// comes up empty — two machines that already tag consistently never
+    /// reach this path at all.
     public static func fuzzyMatch(
         title: String, artist: String, album: String, duration: TimeInterval,
         metadata: TrackMetadata, durationTolerance: TimeInterval = 2
@@ -197,7 +201,7 @@ public enum iCloudSyncService {
         guard abs(duration - metadata.duration) <= durationTolerance else { return false }
         guard fuzzyNormalizedCredit(title) == fuzzyNormalizedCredit(metadata.title) else { return false }
         guard fuzzyNormalizedCredit(artist) == fuzzyNormalizedCredit(metadata.artist) else { return false }
-        return fuzzyAlbumPrefix(album) == fuzzyAlbumPrefix(metadata.album)
+        return fuzzyAlbumsMatch(album, metadata.album)
     }
 
     /// Scans `entries` for one whose metadata fuzzy-matches `track` (see
@@ -232,13 +236,21 @@ public enum iCloudSyncService {
         return collapsedWhitespace(result)
     }
 
-    /// The part of an album name before a colon, if any — "Clandestino"
-    /// and "Clandestino: Esperando la Última Ola" both reduce to
-    /// "clandestino".
-    private static func fuzzyAlbumPrefix(_ s: String) -> String {
-        let normalized = collapsedWhitespace(normalizeQuotes(s).lowercased())
-        guard let colonIndex = normalized.firstIndex(of: ":") else { return normalized }
-        return String(normalized[..<colonIndex]).trimmingCharacters(in: .whitespaces)
+    /// True when one normalized album name is a prefix of the other —
+    /// "Clandestino" / "Clandestino: Esperando la Última Ola", or "Rage
+    /// Against the Machine" / "Rage Against the Machine XX", both match
+    /// this way without needing to special-case a colon, "XX", "Deluxe
+    /// Edition", or any other specific edition/subtitle convention,
+    /// since there's no consistent one to special-case in the first
+    /// place. Title and artist above still have to match exactly
+    /// (feat.-credit-stripped) and duration has to land within
+    /// `durationTolerance` — this is deliberately the loosest of the
+    /// three checks, not the only one, so it doesn't need to be tight on
+    /// its own.
+    private static func fuzzyAlbumsMatch(_ a: String, _ b: String) -> Bool {
+        let normalizedA = collapsedWhitespace(normalizeQuotes(a).lowercased())
+        let normalizedB = collapsedWhitespace(normalizeQuotes(b).lowercased())
+        return normalizedA.hasPrefix(normalizedB) || normalizedB.hasPrefix(normalizedA)
     }
 
     private static func normalizeQuotes(_ s: String) -> String {

@@ -978,6 +978,19 @@ Task { @MainActor in
         !iCloudSyncService.fuzzyMatch(title: "Concrete Jungle", artist: "Bob Marley & The Wailers feat. Rakim", album: "Chant Down Babylon", duration: 400, metadata: creditMetadata),
         "matching title/artist/album shouldn't be enough on its own if the duration is wildly different (e.g. a live version)"
     )
+
+    // A real-world case that slipped past the first (colon-only) version
+    // of album matching: a reissue/anniversary-edition suffix with no
+    // consistent punctuation ("Rage Against the Machine XX") rather than
+    // a colon-delimited subtitle.
+    let reissueMetadata = iCloudSyncService.TrackMetadata(
+        title: "Bombtrack", artist: "Rage Against the Machine", album: "Rage Against the Machine",
+        genre: "Rock", duration: 245, year: nil, trackNumber: nil, discNumber: nil, bpm: nil, key: nil, comments: nil, tags: []
+    )
+    check(
+        iCloudSyncService.fuzzyMatch(title: "Bombtrack", artist: "Rage Against the Machine", album: "Rage Against the Machine XX", duration: 244.72, metadata: reissueMetadata),
+        "a reissue-edition suffix like 'XX' with no delimiter at all should still fuzzy-match the plain album name"
+    )
     print("PASS: iCloudSyncService.fuzzyMatch recognizes retagged duplicates without conflating unrelated same-length songs")
 
     // MARK: - importKnownTracks + fuzzy matching: a locally-scanned file
