@@ -16,8 +16,11 @@ public enum PerformanceEvaluator {
 
     /// Why a note was scored a miss — nil whenever `hit` is true.
     public enum MissReason: String, Sendable {
-        /// Something was clearly played right on time (an onset landed
-        /// inside the tolerance window) — just not the expected pitch.
+        /// An onset landed inside the tolerance window *and* carried a
+        /// clear, different pitch of its own there — not just any nearby
+        /// attack, which could just as easily be a muted/percussive hit,
+        /// fret buzz, or pick scratch with no identifiable pitch at all
+        /// (see `.missed`, which is what those fall under instead).
         case wrongNote
         /// Nothing landed inside the tolerance window, but the nearest
         /// onset nearby was before the expected time.
@@ -25,7 +28,10 @@ public enum PerformanceEvaluator {
         /// Nothing landed inside the tolerance window, but the nearest
         /// onset nearby was after the expected time.
         case late
-        /// No onset at all was found anywhere near the expected time.
+        /// Nothing pitched was found near the expected time — either no
+        /// onset at all nearby, or one was (some kind of attack/transient
+        /// happened), but it carried no clear identifiable pitch of its
+        /// own to call a "wrong note" instead.
         case missed
     }
 
@@ -51,9 +57,23 @@ public enum PerformanceEvaluator {
             self.perNote = perNote
         }
 
+        /// Exactly on pitch *and* within `onsetTolerance` of the expected
+        /// time — the strict count. Kept separate from `correctCount`
+        /// (below) since some callers (e.g. change-detection in
+        /// `OSMDWebView`) want the exact per-note result, not the more
+        /// forgiving overall score.
         public var hitCount: Int { perNote.filter(\.hit).count }
+        /// `hit`, or missed only on timing (`.early`/`.late`) — something
+        /// right was genuinely played, just not exactly on the beat.
+        /// Counted as correct for the overall score: an early/late label
+        /// exists to show *where* a note drifted, not to flunk a note
+        /// that was actually played. `.wrongNote`/`.missed` still count
+        /// against it — nothing was there, or the wrong thing was.
+        public var correctCount: Int {
+            perNote.filter { $0.hit || $0.missReason == .early || $0.missReason == .late }.count
+        }
         public var accuracy: Double {
-            perNote.isEmpty ? 0 : Double(hitCount) / Double(perNote.count)
+            perNote.isEmpty ? 0 : Double(correctCount) / Double(perNote.count)
         }
     }
 
@@ -64,6 +84,17 @@ public enum PerformanceEvaluator {
     /// normal amateur timing variance without going so loose it stops
     /// meaning anything.
     public static let onsetTolerance: TimeInterval = 0.2
+
+    /// How far (in cents — 100ths of a semitone) a detected pitch may sit
+    /// from a note's exact expected frequency and still count as that
+    /// note. 25 cents comfortably clears the ~99.5-cent gap that first
+    /// motivated narrowing this window (see `peakMagnitude`'s doc for
+    /// that history), but different strings/instruments can drift out of
+    /// tune by different amounts (a wound low string is a common
+    /// culprit) — not something one fixed number can account for across
+    /// every guitar, which is why this is exposed the same way
+    /// `onsetTolerance` is: a real default, but user-adjustable.
+    public static let pitchTolerance: Double = 25.0
 
     /// - Parameters:
     ///   - samples: mono recorded audio, e.g. from a microphone/instrument
@@ -78,13 +109,17 @@ public enum PerformanceEvaluator {
     ///     string of "miss"/"wrong" results that are actually a recording-
     ///     latency mismatch rather than genuinely bad playing can be told
     ///     apart: widen it and see if they turn into hits.
+    ///   - pitchTolerance: overrides `Self.pitchTolerance`, in cents — same
+    ///     idea, for a string/instrument that tends to drift further out
+    ///     of tune than others.
     public static func evaluate(
         samples: [Float],
         sampleRate: Double,
         against sequence: NoteSequence,
         isVocal: Bool = false,
         regionStart: TimeInterval = 0,
-        onsetTolerance: TimeInterval = Self.onsetTolerance
+        onsetTolerance: TimeInterval = Self.onsetTolerance,
+        pitchTolerance: Double = Self.pitchTolerance
     ) -> Result {
         let onsets = detectOnsets(samples: samples, sampleRate: sampleRate)
         // Wider than `onsetTolerance` — purely for labeling a clean miss as
@@ -96,16 +131,37 @@ public enum PerformanceEvaluator {
 
         let perNote: [NoteEvaluation] = sequence.notes.map { note in
             let relativeStart = note.startTime - regionStart
-            let matchingOnset = onsets.first { abs($0 - relativeStart) <= onsetTolerance }
+            // The *closest* onset within tolerance, not the first one in
+            // time order — with a wide tolerance and closely-spaced notes
+            // (a fast run is the common case, which on a guitar tends to
+            // mean higher frets/notes), the window can easily contain more
+            // than one real onset, e.g. this note's own attack *and* a
+            // neighboring note's. `.first` always took whichever came
+            // earliest regardless of which one this note's own attack
+            // actually was, so `frequencyPresent` below would sometimes
+            // sample the *wrong* note's onset — explaining reports of
+            // widening the tolerance sometimes making pickup *worse*
+            // rather than better, exactly for these fast/close passages.
+            let matchingOnset = onsets
+                .filter { abs($0 - relativeStart) <= onsetTolerance }
+                .min(by: { abs($0 - relativeStart) < abs($1 - relativeStart) })
             let checkTime = matchingOnset ?? relativeStart
-            let present = matchingOnset != nil
-                && frequencyPresent(samples: samples, sampleRate: sampleRate, atTime: checkTime, frequency: note.frequency)
+            let frequencyCheck = matchingOnset != nil
+                ? checkFrequency(samples: samples, sampleRate: sampleRate, atTime: checkTime, targetFrequency: note.frequency, toleranceCents: pitchTolerance)
+                : nil
+            let present = frequencyCheck?.expectedPresent ?? false
             let pitch = isVocal ? detectPitch(samples: samples, sampleRate: sampleRate, atTime: checkTime) : nil
 
             var missReason: MissReason?
             if !present {
-                if matchingOnset != nil {
+                if matchingOnset != nil, frequencyCheck?.hasClearAlternatePeak == true {
                     missReason = .wrongNote
+                } else if matchingOnset != nil {
+                    // An onset landed on time, but nothing pitched was
+                    // clearly identifiable there — a muted/percussive hit,
+                    // fret buzz, or pick noise, none of which are really
+                    // "a different note" (see `.wrongNote`'s doc).
+                    missReason = .missed
                 } else if let nearest = onsets
                     .filter({ abs($0 - relativeStart) <= nearbyRadius })
                     .min(by: { abs($0 - relativeStart) < abs($1 - relativeStart) }) {
@@ -170,6 +226,10 @@ public enum PerformanceEvaluator {
 
         var flux: [Float] = []
         var times: [TimeInterval] = []
+        // Alongside flux — an *absolute* floor a candidate onset also has
+        // to clear (see below), not just a relative jump against
+        // whatever's around it.
+        var rmsValues: [Float] = []
         // Frame 0 is compared against an assumed-silent baseline (all
         // zeros) rather than skipped — it has no real previous frame, but
         // treating it as flux-less made the very first note of a take
@@ -187,6 +247,9 @@ public enum PerformanceEvaluator {
                 if diff > 0 { sum += diff }
             }
             flux.append(sum)
+            var sumSquares: Float = 0
+            for sample in frame { sumSquares += sample * sample }
+            rmsValues.append((sumSquares / Float(frame.count)).squareRoot())
             // Shifted back by the padding so returned onset times stay
             // aligned to the original, un-padded `samples` timeline.
             times.append(Double(index) / sampleRate - paddingDuration)
@@ -206,9 +269,24 @@ public enum PerformanceEvaluator {
         let variance = statsFlux.isEmpty ? 0 : statsFlux.reduce(Float(0)) { $0 + ($1 - mean) * ($1 - mean) } / Float(statsFlux.count)
         let threshold = mean + 1.5 * sqrt(variance)
 
+        // A *relative* threshold alone has no floor: in a stretch of near-
+        // silence, `mean`/`variance` themselves shrink to near-zero, so
+        // ordinary ambient noise (which concentrates at low frequencies —
+        // room rumble, HVAC, electrical hum) trivially clears "1.5 std
+        // devs above" a nearly-flat baseline and gets reported as a real
+        // onset. That's what let a low string's expected note come back
+        // "hit" even while nothing was actually played: an onset from
+        // pure noise, followed by that same noise's low-frequency energy
+        // clearing `frequencyPresent`'s check too. This absolute RMS
+        // floor (same value `TunerEngine` already gates on) means a
+        // candidate frame has to be genuinely audible, not just louder
+        // than an already-quiet moment, to ever count.
+        let minimumRMS: Float = 0.01
+
         var onsets: [TimeInterval] = []
         for i in 0..<flux.count {
             guard flux[i] > threshold else { continue }
+            guard rmsValues[i] > minimumRMS else { continue }
             // The "local peak among neighbors" refinement only makes
             // sense with both neighbors present — frame 0 (and the very
             // last frame) just need to clear the threshold on their own.
@@ -223,11 +301,28 @@ public enum PerformanceEvaluator {
 
     // MARK: - Expected-frequency verification
 
+    struct FrequencyCheck {
+        /// Whether the *specific known* target frequency (or one of its
+        /// first two harmonics) was present.
+        let expectedPresent: Bool
+        /// Whether the spectrum has a clear, narrow dominant peak at all
+        /// — real plucked/picked/sung notes concentrate most of their
+        /// energy into a handful of bins; a muted/percussive hit, fret
+        /// buzz, or pick scratch doesn't, even though it still triggers a
+        /// genuine onset. Only meaningful (and only checked by callers)
+        /// when `expectedPresent` is false — it's what tells "a *different*
+        /// note was clearly played" (`.wrongNote`) apart from "an attack
+        /// happened here, but nothing pitched came out of it" (`.missed`).
+        let hasClearAlternatePeak: Bool
+    }
+
     /// Checks for energy at one *specific known* frequency around `time` —
-    /// not "what pitch is this," just "is this particular pitch present."
-    /// Run once per expected note, so a chord is simply several of these
-    /// checked independently.
-    private static func frequencyPresent(samples: [Float], sampleRate: Double, atTime time: TimeInterval, frequency: Double) -> Bool {
+    /// not "what pitch is this," just "is this particular pitch present" —
+    /// while also characterizing the spectrum enough to tell a genuine
+    /// *different* note apart from an un-pitched attack (see
+    /// `FrequencyCheck.hasClearAlternatePeak`). Run once per expected
+    /// note, so a chord is simply several of these checked independently.
+    private static func checkFrequency(samples: [Float], sampleRate: Double, atTime time: TimeInterval, targetFrequency: Double, toleranceCents: Double) -> FrequencyCheck {
         // 16384, not 8192 — finer frequency resolution (~2.7Hz/bin instead
         // of ~5.4Hz), needed now that harmonics are checked too: two
         // unrelated notes' partials can sit close enough together that a
@@ -235,7 +330,9 @@ public enum PerformanceEvaluator {
         // what the "wrong note" test case caught — E2's 2nd harmonic and
         // D#3's fundamental are only ~9Hz apart).
         let windowSize = 16384
-        guard let frame = forwardFrame(samples: samples, sampleRate: sampleRate, afterOnsetAt: time, size: windowSize) else { return false }
+        guard let frame = forwardFrame(samples: samples, sampleRate: sampleRate, afterOnsetAt: time, size: windowSize) else {
+            return FrequencyCheck(expectedPresent: false, hasClearAlternatePeak: false)
+        }
 
         let fft = RealFFT(size: windowSize)
         let magnitudes = fft.magnitudes(of: frame, window: hannWindow(size: windowSize))
@@ -247,7 +344,7 @@ public enum PerformanceEvaluator {
         // floor is tiny enough that ordinary spectral leakage can look
         // like an enormous multiple of it).
         let globalPeak = magnitudes.max() ?? 0
-        guard globalPeak > 0 else { return false }
+        guard globalPeak > 0 else { return FrequencyCheck(expectedPresent: false, hasClearAlternatePeak: false) }
 
         // Checks the fundamental *and* its first two harmonics, not the
         // fundamental alone — a plucked low string's fundamental is often
@@ -255,27 +352,56 @@ public enum PerformanceEvaluator {
         // effect, worse through a laptop mic's bass rolloff), so a
         // fundamental-only check under-detects exactly the notes that
         // showed it most (open low E). A hit on any of the three counts.
+        var expectedPresent = false
         for multiple in [1.0, 2.0, 3.0] {
-            let peak = peakMagnitude(magnitudes, near: frequency * multiple, sampleRate: sampleRate, windowSize: windowSize)
+            let peak = peakMagnitude(magnitudes, near: targetFrequency * multiple, sampleRate: sampleRate, windowSize: windowSize, toleranceCents: toleranceCents)
             if peak > globalPeak * 0.15 {
-                return true
+                expectedPresent = true
+                break
             }
         }
-        return false
+
+        // "Clearly tonal" — the dominant peak stands far enough above the
+        // spectrum's own average to be a real, narrow harmonic partial
+        // rather than broadband noise/an attack transient's splatter.
+        // Pure noise's max-of-many-bins still clears a *low* multiple of
+        // the mean fairly often just from how extreme values behave
+        // across thousands of bins (this window has ~8192) — 15x sits
+        // comfortably above that statistical ceiling while staying well
+        // below where an actual plucked note's peak-to-mean ratio lands,
+        // going by the difference between the "clean note" and "quiet
+        // ambient noise" fixtures this file's own tests already cover.
+        let meanMagnitude = magnitudes.reduce(0, +) / Float(magnitudes.count)
+        let tonalPeakRatio: Float = 15.0
+        let hasClearAlternatePeak = meanMagnitude > 0 && globalPeak > meanMagnitude * tonalPeakRatio
+
+        return FrequencyCheck(expectedPresent: expectedPresent, hasClearAlternatePeak: hasClearAlternatePeak)
     }
 
-    private static func peakMagnitude(_ magnitudes: [Float], near targetFrequency: Double, sampleRate: Double, windowSize: Int) -> Float {
+    private static func peakMagnitude(_ magnitudes: [Float], near targetFrequency: Double, sampleRate: Double, windowSize: Int, toleranceCents: Double) -> Float {
         let binHz = sampleRate / Double(windowSize)
         let centerBin = Int((targetFrequency / binHz).rounded())
-        // 1 bin, not 2: now that `frequencyPresent` checks two harmonics
-        // in addition to the fundamental, a wider radius here let a wrong
-        // note's own fundamental get mistaken for the expected note's
-        // harmonic when the two landed close together (e.g. E2's 2nd
-        // harmonic at 164.8Hz sits within 2 bins of D#3's fundamental at
-        // 155.6Hz) — this stays generous enough for realistic tuning
-        // drift (~5Hz at these frequencies is still several times more
-        // slack than a guitar even noticeably out of tune would need).
-        let searchRadius = 1
+        // A *fixed* bin-count radius gives wildly uneven tuning tolerance
+        // across the guitar's range, because bin width is a constant
+        // number of Hz but tuning tolerance is inherently a constant
+        // *percentage* of frequency (cents): 1 bin (~2.7Hz at this window
+        // size) is a generous ~56 cents for a low E's ~82Hz fundamental,
+        // but under 10 cents for a note near 1kHz — tighter than normal
+        // tuning drift, which is why high notes were going almost
+        // entirely undetected. Scaling the radius with frequency (a
+        // user-adjustable `toleranceCents` — see `pitchTolerance`, 25
+        // cents by default) fixes that, and as a side effect *tightens*
+        // the window for low notes versus the old fixed 1-bin radius,
+        // which helps rather than hurts: those were exactly the notes
+        // prone to false hits from low-frequency ambient noise. The
+        // default stays safely clear of the ~99.5-cent gap that caused
+        // the original "wrong note" collision this radius was first
+        // narrowed for (E2's 2nd harmonic at 164.8Hz vs. D#3's
+        // fundamental at 155.6Hz) — widening it well past that reopens
+        // that specific collision risk, which is worth knowing before
+        // reaching for a much larger value than a semitone or so.
+        let toleranceHz = targetFrequency * (pow(2.0, toleranceCents / 1200.0) - 1.0)
+        let searchRadius = max(1, Int((toleranceHz / binHz).rounded(.up)))
         let lower = max(0, centerBin - searchRadius)
         let upper = min(magnitudes.count - 1, centerBin + searchRadius)
         guard lower <= upper else { return 0 }

@@ -4,6 +4,11 @@ import Foundation
 /// tags.
 public enum SmartRuleField: String, Codable, Sendable, CaseIterable, Identifiable {
     case title, artist, album, genre, year, trackNumber, discNumber, bpm, key, comments, tags, rating, playCount
+    /// A track's *album's* total play count (every track on that album
+    /// summed together) — an album-level characteristic, unlike every
+    /// other field here, which reads straight off the one track being
+    /// tested. See `SmartRule.matches(_:albumTotalPlays:)`.
+    case albumTotalPlays
 
     public var id: String { rawValue }
 
@@ -20,14 +25,15 @@ public enum SmartRuleField: String, Codable, Sendable, CaseIterable, Identifiabl
         case .key: return "Key"
         case .comments: return "Comments"
         case .tags: return "Tags"
-        case .rating: return "Rating"
+        case .rating: return "Resonance"
         case .playCount: return "Play Count"
+        case .albumTotalPlays: return "Album Total Plays"
         }
     }
 
     public var isNumeric: Bool {
         switch self {
-        case .year, .trackNumber, .discNumber, .bpm, .rating, .playCount: return true
+        case .year, .trackNumber, .discNumber, .bpm, .rating, .playCount, .albumTotalPlays: return true
         case .title, .artist, .album, .genre, .key, .comments, .tags: return false
         }
     }
@@ -81,12 +87,18 @@ public struct SmartRule: Identifiable, Hashable, Sendable, Codable {
         self.value = value
     }
 
-    public func matches(_ track: Track) -> Bool {
+    /// - Parameter albumTotalPlays: every album's summed play count (see
+    ///   `LibraryModel.albumTotalPlays`) — needed only for the one field
+    ///   (`.albumTotalPlays`) that describes the track's *album* rather
+    ///   than the track itself; every other field reads straight off
+    ///   `track`. Defaults to empty, so a rule using any other field still
+    ///   works without a caller having to compute this first.
+    public func matches(_ track: Track, albumTotalPlays: [String: Double] = [:]) -> Bool {
         let trimmedValue = value.trimmingCharacters(in: .whitespaces)
         guard !trimmedValue.isEmpty else { return false }
 
         if field.isNumeric {
-            guard let target = Double(trimmedValue), let actual = numericValue(for: track) else { return false }
+            guard let target = Double(trimmedValue), let actual = numericValue(for: track, albumTotalPlays: albumTotalPlays) else { return false }
             switch comparison {
             case .equals: return actual == target
             case .notEquals: return actual != target
@@ -121,7 +133,7 @@ public struct SmartRule: Identifiable, Hashable, Sendable, Codable {
         }
     }
 
-    private func numericValue(for track: Track) -> Double? {
+    private func numericValue(for track: Track, albumTotalPlays: [String: Double]) -> Double? {
         switch field {
         case .year: return track.year.map(Double.init)
         case .trackNumber: return track.trackNumber.map(Double.init)
@@ -129,6 +141,7 @@ public struct SmartRule: Identifiable, Hashable, Sendable, Codable {
         case .bpm: return track.bpm.map(Double.init)
         case .rating: return Double(track.rating)
         case .playCount: return track.playCount
+        case .albumTotalPlays: return albumTotalPlays[track.album] ?? 0
         case .title, .artist, .album, .genre, .key, .comments, .tags: return nil
         }
     }
@@ -141,7 +154,7 @@ public struct SmartRule: Identifiable, Hashable, Sendable, Codable {
         case .genre: return track.genre
         case .key: return track.key ?? ""
         case .comments: return track.comments ?? ""
-        case .tags, .year, .trackNumber, .discNumber, .bpm, .rating, .playCount: return ""
+        case .tags, .year, .trackNumber, .discNumber, .bpm, .rating, .playCount, .albumTotalPlays: return ""
         }
     }
 }

@@ -40,6 +40,8 @@ public final class MultiTrackPlaybackEngine: ObservableObject {
         didSet { engine.mainMixerNode.outputVolume = volume }
     }
     public var loopRegion: ClosedRange<TimeInterval>?
+    /// See `NotePlaybackEngine.syncOffset` — identical purpose.
+    public var syncOffset: TimeInterval = 0
     public var playbackRate: Double = 1.0 {
         didSet {
             guard playbackRate != oldValue, isPlaying else { return }
@@ -178,8 +180,22 @@ public final class MultiTrackPlaybackEngine: ObservableObject {
         // need doing.
         if !engine.isRunning || !hasLoadedInstruments { startEngineAndLoadInstruments() }
         isPlaying = true
-        schedule(from: pausedAt)
-        startWallClock = Date().addingTimeInterval(-pausedAt / playbackRate)
+        let offset = pausedAt
+        schedule(from: offset)
+        // See `NotePlaybackEngine.play()`'s identical fix: anchoring from
+        // inside a dispatched closure, not synchronously here, so
+        // `startWallClock` reflects when the main queue actually got
+        // around to starting playback rather than the instant `play()`
+        // was called — otherwise any startup scheduling slop (worst right
+        // after a cold engine start) gets baked into every future
+        // `currentTime` estimate, making the piece look like it left beat
+        // one slightly early for the whole take.
+        let anchorItem = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.startWallClock = Date().addingTimeInterval(-offset / self.playbackRate)
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now(), execute: anchorItem)
+        scheduledWorkItems.append(anchorItem)
         startTimer()
     }
 
@@ -253,7 +269,10 @@ public final class MultiTrackPlaybackEngine: ObservableObject {
         let newTimer = Timer(timeInterval: 0.05, repeats: true) { [weak self] _ in
             Task { @MainActor in
                 guard let self, let start = self.startWallClock else { return }
-                self.currentTime = Date().timeIntervalSince(start) * self.playbackRate
+                let idealTime = Date().timeIntervalSince(start) * self.playbackRate
+                // See `NotePlaybackEngine.syncOffset`'s doc comment for
+                // the full story on why this is one plain user-set value.
+                self.currentTime = max(0, idealTime - self.syncOffset)
                 if let loopRegion = self.loopRegion, self.currentTime >= loopRegion.upperBound {
                     self.seek(to: loopRegion.lowerBound)
                     return

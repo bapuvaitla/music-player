@@ -46,6 +46,12 @@ struct SidebarNowPlayingArt: View {
         VStack(spacing: 0) {
             ArtworkView(track: displayTrack, size: artSize, cornerRadius: 12)
                 .shadow(color: .black.opacity(0.18), radius: 8, y: 4)
+                .contentShape(Rectangle())
+                .onTapGesture {
+                    guard let album = displayTrack?.album else { return }
+                    library.resetAllFilters()
+                    library.setAlbums([album])
+                }
                 .contextMenu {
                     if displayTrack != nil {
                         Button("Edit Album Info…") {
@@ -63,7 +69,7 @@ struct SidebarNowPlayingArt: View {
                             }
                         }
                         if let album = displayTrack?.album {
-                            Toggle("Incomplete Rating", isOn: Binding(
+                            Toggle("Incomplete Resonance", isOn: Binding(
                                 get: { library.incompleteRatingAlbums.contains(album) },
                                 set: { _ in library.toggleIncompleteRating(forAlbum: album) }
                             ))

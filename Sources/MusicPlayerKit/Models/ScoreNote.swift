@@ -57,8 +57,17 @@ public struct NoteSequence: Sendable {
     public var title: String?
     /// Beats per minute, from the source's `<sound tempo="...">` (120 if
     /// absent) — exposed for a metronome/count-in to click in time with
-    /// the piece, independent of the individual note timings above.
+    /// the piece, independent of the individual note timings above. When
+    /// the source has more than one `<sound tempo>` marking, this is
+    /// whichever one parsing saw last — `tempo(atTime:)` below is what
+    /// actually accounts for a mid-piece tempo change; this flat value
+    /// remains as a simple fallback/display default.
     public var tempo: Double
+    /// Every tempo change in the source, in order: `(time it takes
+    /// effect, new BPM)`. Empty for a piece with a single, constant
+    /// tempo (the common case) — `tempo(atTime:)` falls back to `tempo`
+    /// itself whenever this is empty or `time` is before the first entry.
+    public var tempoChanges: [(time: TimeInterval, tempo: Double)]
     /// Start time of each `<measure>` in the source, in order — lets the
     /// UI lay the piece out as bars/lines (like a real score) and lets
     /// rewind/forward step by bar, independent of any fixed
@@ -72,12 +81,34 @@ public struct NoteSequence: Sendable {
     /// tracked).
     public var beatsPerBar: Int
 
-    public init(notes: [ScoreNote], title: String? = nil, tempo: Double = 120, barStartTimes: [TimeInterval] = [], beatsPerBar: Int = 4) {
+    public init(
+        notes: [ScoreNote],
+        title: String? = nil,
+        tempo: Double = 120,
+        tempoChanges: [(time: TimeInterval, tempo: Double)] = [],
+        barStartTimes: [TimeInterval] = [],
+        beatsPerBar: Int = 4
+    ) {
         self.notes = notes.sorted { $0.startTime < $1.startTime }
         self.title = title
         self.tempo = tempo
+        self.tempoChanges = tempoChanges
         self.barStartTimes = barStartTimes
         self.beatsPerBar = beatsPerBar
+    }
+
+    /// The tempo actually in effect at `time` — unlike the flat `tempo`
+    /// property, this accounts for a mid-piece tempo change. A metronome
+    /// clicking for a *loop region* specifically needs this: `tempo`
+    /// alone reflects whichever marking parsing saw last, which silently
+    /// races ahead of (or drags behind) a region that uses an earlier,
+    /// different tempo — while each note's own `startTime` was always
+    /// correctly resolved against whichever tempo was active *at that
+    /// point*, since parsing applies tempo changes as it goes. This
+    /// brings the metronome's timing into agreement with that.
+    public func tempo(atTime time: TimeInterval) -> Double {
+        let applicable = tempoChanges.last(where: { $0.time <= time })
+        return applicable?.tempo ?? tempo
     }
 
     /// Every distinct start time, in order — i.e. one entry per "beat" of
@@ -169,5 +200,75 @@ public struct NoteSequence: Sendable {
         let subdivision = ((quarterBeats % 4) + 4) % 4
         let suffix = ["", "e", "&", "a"][subdivision]
         return "\(beatNumber)\(suffix)"
+    }
+
+    /// Nudges any note landing *very* close to (but not exactly on) a beat
+    /// grid position onto it exactly. Real-world tab exports occasionally
+    /// have a note that's clearly *meant* to land right on the beat sit a
+    /// handful of milliseconds off it — tick-rounding noise from whatever
+    /// authored the file, not a deliberate rhythm — and that small offset
+    /// is enough to make a note (especially the very first one) read as
+    /// "slightly after the beat" against the piece's own beat-line grid.
+    /// Deliberately narrow (30ms default, well under even a fast piece's
+    /// sixteenth-note spacing): a genuinely syncopated note sits far
+    /// enough from any beat-grid point that this never touches it — this
+    /// only cleans up noise, it doesn't quantize the performance.
+    public mutating func snapNotesNearBeats(tolerance: TimeInterval = 0.03) {
+        let grid = beatTimes
+        guard !grid.isEmpty else { return }
+        for index in notes.indices {
+            let time = notes[index].startTime
+            guard let nearest = grid.min(by: { abs($0 - time) < abs($1 - time) }) else { continue }
+            if abs(nearest - time) <= tolerance {
+                notes[index].startTime = nearest
+            }
+        }
+    }
+
+    /// A hammer-on/pull-off/slide only makes physical sense between two
+    /// notes on the *same string* — you can't hammer, pull, or slide from
+    /// one string to a different one. But when the technique's target
+    /// moment is a chord (several notes sharing one `startTime`), a real
+    /// source export can attach the "stop" half of the marking to the
+    /// *wrong* member of that chord — e.g. MuseScore, exporting a
+    /// hammer-on into a chord, sometimes marks whichever note happens to
+    /// be listed first in that chord rather than the one actually on the
+    /// origin note's string, even though MuseScore's own on-screen
+    /// rendering draws the curve to the musically-correct (same-string)
+    /// note. Parsing that literally left the technique attached to a note
+    /// with no same-string predecessor at all — which `TabGridView`
+    /// correctly refuses to draw a tie for (same-string being a hard
+    /// requirement), so the marking just silently vanished instead of
+    /// rendering on the wrong note.
+    ///
+    /// This repairs exactly that: for every note carrying an
+    /// `incomingArticulation` whose string doesn't match any note at the
+    /// *previous* distinct `startTime`, checks whether a *sibling* in its
+    /// own chord (same `startTime`) does match instead — and if so, moves
+    /// the articulation there, where it actually belongs.
+    public mutating func reassignMisattachedArticulations() {
+        var indicesByStart: [TimeInterval: [Int]] = [:]
+        for (index, note) in notes.enumerated() {
+            indicesByStart[note.startTime, default: []].append(index)
+        }
+        let sortedStarts = indicesByStart.keys.sorted()
+
+        for (position, start) in sortedStarts.enumerated() {
+            guard position > 0, let currentIndices = indicesByStart[start] else { continue }
+            let previousStart = sortedStarts[position - 1]
+            let previousStrings = Set((indicesByStart[previousStart] ?? []).compactMap { notes[$0].string })
+
+            for index in currentIndices {
+                guard let articulation = notes[index].incomingArticulation,
+                      let string = notes[index].string,
+                      !previousStrings.contains(string) else { continue }
+                guard let matchIndex = currentIndices.first(where: {
+                    $0 != index && notes[$0].incomingArticulation == nil
+                        && notes[$0].string.map(previousStrings.contains) == true
+                }) else { continue }
+                notes[matchIndex].incomingArticulation = articulation
+                notes[index].incomingArticulation = nil
+            }
+        }
     }
 }

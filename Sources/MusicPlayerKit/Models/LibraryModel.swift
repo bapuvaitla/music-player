@@ -2,7 +2,7 @@ import Foundation
 import SwiftUI
 
 /// Every column the track table can show, in the order the user can drag
-/// them into. Title / Artist / Album / Time / Rating are always visible
+/// them into. Title / Artist / Album / Time / Resonance are always visible
 /// (can't be hidden via the Columns popover) but can still be dragged to
 /// any position alongside the optional ones.
 public enum TrackColumn: String, CaseIterable, Identifiable, Sendable {
@@ -27,7 +27,7 @@ public enum TrackColumn: String, CaseIterable, Identifiable, Sendable {
         case .artist: return "Artist"
         case .album: return "Album"
         case .time: return "Time"
-        case .rating: return "Rating"
+        case .rating: return "Resonance"
         case .genre: return "Genre"
         case .year: return "Year"
         case .trackNumber: return "Track #"
@@ -232,6 +232,16 @@ public final class LibraryModel: ObservableObject {
         return result
     }
 
+    /// Summed play count per album across the whole library — same
+    /// `tracks`-not-`visibleTracks` convention as `albumAverageRatings`
+    /// (a hidden track's plays still count toward its album's total), and
+    /// the same source `resolvedTracks(for:)` reads from to evaluate a
+    /// smart playlist's `.albumTotalPlays` rule field against every one of
+    /// that album's tracks.
+    public var albumTotalPlays: [String: Double] {
+        Dictionary(grouping: tracks, by: \.album).mapValues { $0.reduce(0) { $0 + $1.playCount } }
+    }
+
     /// Albums where some, but not all, tracks are rated — their average is
     /// still shown in the sidebar, just visually muted to flag that it's
     /// based on incomplete data.
@@ -400,10 +410,11 @@ public final class LibraryModel: ObservableObject {
         if playlist.isSmart {
             let rules = playlist.smartRules
             guard !rules.isEmpty else { return [] }
+            let albumTotalPlays = albumTotalPlays
             return visibleTracks.filter { track in
                 playlist.smartMatchAll
-                    ? rules.allSatisfy { $0.matches(track) }
-                    : rules.contains { $0.matches(track) }
+                    ? rules.allSatisfy { $0.matches(track, albumTotalPlays: albumTotalPlays) }
+                    : rules.contains { $0.matches(track, albumTotalPlays: albumTotalPlays) }
             }
         } else {
             let byPath = Dictionary(uniqueKeysWithValues: visibleTracks.map { ($0.path, $0) })

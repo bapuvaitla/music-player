@@ -38,7 +38,17 @@ public enum MusicXMLParser {
         guard parser.parse() else {
             throw ParseError.malformedXML(parser.parserError)
         }
-        return NoteSequence(notes: delegate.notes, title: delegate.title, tempo: delegate.tempo, barStartTimes: delegate.barStartTimes, beatsPerBar: delegate.beatsPerBar)
+        var sequence = NoteSequence(
+            notes: delegate.notes,
+            title: delegate.title,
+            tempo: delegate.tempo,
+            tempoChanges: delegate.tempoChanges,
+            barStartTimes: delegate.barStartTimes,
+            beatsPerBar: delegate.beatsPerBar
+        )
+        sequence.snapNotesNearBeats()
+        sequence.reassignMisattachedArticulations()
+        return sequence
     }
 
     /// One `<part>` from a multi-part score (e.g. a combined arrangement
@@ -70,13 +80,16 @@ public enum MusicXMLParser {
             throw ParseError.malformedXML(parser.parserError)
         }
         return delegate.orderedPartIDs.map { id in
-            let sequence = NoteSequence(
+            var sequence = NoteSequence(
                 notes: delegate.notesByPart[id] ?? [],
                 title: delegate.title,
                 tempo: delegate.tempo,
+                tempoChanges: delegate.tempoChanges,
                 barStartTimes: delegate.barStartTimesByPart[id] ?? [],
                 beatsPerBar: delegate.beatsPerBar
             )
+            sequence.snapNotesNearBeats()
+            sequence.reassignMisattachedArticulations()
             return MusicXMLPart(name: delegate.partNames[id] ?? id, isTabPart: delegate.tabPartIDs.contains(id), sequence: sequence)
         }
     }
@@ -85,6 +98,7 @@ public enum MusicXMLParser {
         var notes: [ScoreNote] = []
         var title: String?
         var tempo: Double = 120
+        var tempoChanges: [(time: TimeInterval, tempo: Double)] = []
         var barStartTimes: [TimeInterval] = []
         var beatsPerBar: Int = 4
 
@@ -94,6 +108,11 @@ public enum MusicXMLParser {
         private var groupStartTicks: Double = 0
         /// Where the *next* non-chord note will start.
         private var cursorTicks: Double = 0
+        /// The tick position / real-time offset as of the most recent
+        /// tempo change — see `ticksToSeconds`. Both stay 0 for a piece
+        /// with a single, constant tempo.
+        private var lastTempoChangeTicks: Double = 0
+        private var lastTempoChangeSeconds: TimeInterval = 0
 
         private var currentElementText = ""
         private var isChordNote = false
@@ -157,6 +176,13 @@ public enum MusicXMLParser {
                 backupForwardDurationTicks = nil
             case "sound":
                 if let tempoString = attributeDict["tempo"], let parsedTempo = Double(tempoString), parsedTempo > 0 {
+                    // Computed *before* `lastTempoChangeTicks`/`tempo` are
+                    // updated — uses whatever tempo/baseline was still in
+                    // effect up to this point in the piece.
+                    let changeTime = ticksToSeconds(cursorTicks)
+                    tempoChanges.append((time: changeTime, tempo: parsedTempo))
+                    lastTempoChangeTicks = cursorTicks
+                    lastTempoChangeSeconds = changeTime
                     tempo = parsedTempo
                 }
             case "hammer-on":
@@ -245,9 +271,22 @@ public enum MusicXMLParser {
             ))
         }
 
+        /// Ticks elapsed *since the last tempo change* convert to seconds
+        /// at the *current* tempo, added on top of however much real time
+        /// had already elapsed as of that change — not
+        /// `ticks / divisions * (60 / tempo)` applied to the raw tick
+        /// count from the very start, which retroactively rescales
+        /// everything before the change too. That naive version is fine
+        /// for a constant-tempo piece (the common case, and where
+        /// `lastTempoChangeTicks`/`lastTempoChangeSeconds` both stay 0),
+        /// but for one with more than one `<sound tempo>` marking it
+        /// produces non-monotonic note timing — a note after a tempo
+        /// *increase* could compute an earlier `startTime` than a note
+        /// before it, since the increase gets applied backward across
+        /// ticks that actually elapsed at the old, slower tempo.
         private func ticksToSeconds(_ ticks: Double) -> TimeInterval {
-            let quarterNotes = ticks / divisions
-            return quarterNotes * (60.0 / tempo)
+            let quarterNotes = (ticks - lastTempoChangeTicks) / divisions
+            return lastTempoChangeSeconds + quarterNotes * (60.0 / tempo)
         }
 
         private static let pitchClassByStep: [String: Int] = [
@@ -269,6 +308,7 @@ public enum MusicXMLParser {
     private final class MultiPartDelegate: NSObject, XMLParserDelegate {
         var title: String?
         var tempo: Double = 120
+        var tempoChanges: [(time: TimeInterval, tempo: Double)] = []
         var beatsPerBar: Int = 4
 
         var orderedPartIDs: [String] = []
@@ -281,6 +321,9 @@ public enum MusicXMLParser {
         private var currentPartID: String?
         private var groupStartTicks: Double = 0
         private var cursorTicks: Double = 0
+        /// See `Delegate`'s identical properties / `ticksToSeconds`.
+        private var lastTempoChangeTicks: Double = 0
+        private var lastTempoChangeSeconds: TimeInterval = 0
 
         private var currentElementText = ""
         private var isChordNote = false
@@ -353,6 +396,7 @@ public enum MusicXMLParser {
                 backupForwardDurationTicks = nil
             case "sound":
                 if let tempoString = attributeDict["tempo"], let parsedTempo = Double(tempoString), parsedTempo > 0 {
+                    tempoChanges.append((time: ticksToSeconds(cursorTicks), tempo: parsedTempo))
                     tempo = parsedTempo
                 }
             case "hammer-on":
@@ -452,9 +496,22 @@ public enum MusicXMLParser {
             ))
         }
 
+        /// Ticks elapsed *since the last tempo change* convert to seconds
+        /// at the *current* tempo, added on top of however much real time
+        /// had already elapsed as of that change — not
+        /// `ticks / divisions * (60 / tempo)` applied to the raw tick
+        /// count from the very start, which retroactively rescales
+        /// everything before the change too. That naive version is fine
+        /// for a constant-tempo piece (the common case, and where
+        /// `lastTempoChangeTicks`/`lastTempoChangeSeconds` both stay 0),
+        /// but for one with more than one `<sound tempo>` marking it
+        /// produces non-monotonic note timing — a note after a tempo
+        /// *increase* could compute an earlier `startTime` than a note
+        /// before it, since the increase gets applied backward across
+        /// ticks that actually elapsed at the old, slower tempo.
         private func ticksToSeconds(_ ticks: Double) -> TimeInterval {
-            let quarterNotes = ticks / divisions
-            return quarterNotes * (60.0 / tempo)
+            let quarterNotes = (ticks - lastTempoChangeTicks) / divisions
+            return lastTempoChangeSeconds + quarterNotes * (60.0 / tempo)
         }
 
         private static let pitchClassByStep: [String: Int] = [

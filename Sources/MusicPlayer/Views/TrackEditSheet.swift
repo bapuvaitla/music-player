@@ -144,12 +144,12 @@ struct TrackEditSheet: View {
 
             VStack(alignment: .leading, spacing: 4) {
                 HStack {
-                    Text("Rating")
+                    Text("Resonance")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                     Spacer()
                     if isBatch {
-                        Toggle("Set Rating", isOn: $batchSetRating)
+                        Toggle("Set Resonance", isOn: $batchSetRating)
                             .toggleStyle(.checkbox)
                             .font(.caption)
                             .controlSize(.small)

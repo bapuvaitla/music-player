@@ -27,6 +27,13 @@ struct SidebarFacetSection: View {
     /// of a numeric rating.
     var incompleteRatingItems: Set<String>? = nil
     var onToggleIncompleteRating: ((String) -> Void)? = nil
+    /// Only used for the Albums section — shown as a hover tooltip on
+    /// each row rather than another always-visible number crammed into an
+    /// already-tight row; primarily useful for finding your most (or
+    /// least) listened-to albums, or when building a smart playlist rule
+    /// on `.albumTotalPlays` and wanting a sense of what the actual
+    /// numbers look like.
+    var totalPlays: [String: Double]? = nil
 
     // A dynamic key (keyed on `title`, since each facet section needs its
     // own remembered expand state) means this can't use the plain
@@ -86,7 +93,8 @@ struct SidebarFacetSection: View {
         onClear: @escaping () -> Void,
         onShowAllTracks: ((String) -> Void)? = nil,
         incompleteRatingItems: Set<String>? = nil,
-        onToggleIncompleteRating: ((String) -> Void)? = nil
+        onToggleIncompleteRating: ((String) -> Void)? = nil,
+        totalPlays: [String: Double]? = nil
     ) {
         self.title = title
         self.items = items
@@ -99,6 +107,7 @@ struct SidebarFacetSection: View {
         self.onShowAllTracks = onShowAllTracks
         self.incompleteRatingItems = incompleteRatingItems
         self.onToggleIncompleteRating = onToggleIncompleteRating
+        self.totalPlays = totalPlays
         self._isExpanded = AppStorage(wrappedValue: false, "sidebarExpanded_\(title)")
     }
 
@@ -147,10 +156,19 @@ struct SidebarFacetSection: View {
 
     private var sortHelpText: String {
         switch sortMode {
-        case .random: return "Random order — click to sort by rating, highest first"
-        case .ratingDescending: return "Sorted by rating, highest first — click to reverse"
-        case .ratingAscending: return "Sorted by rating, lowest first — click for random order"
+        case .random: return "Random order — click to sort by resonance, highest first"
+        case .ratingDescending: return "Sorted by resonance, highest first — click to reverse"
+        case .ratingAscending: return "Sorted by resonance, lowest first — click for random order"
         }
+    }
+
+    /// Rounded to a whole number for display — `playCount` itself is
+    /// fractional (rewind-aware: partial listens accumulate partial
+    /// credit), which reads as odd precision ("12.3 plays") for a casual
+    /// tooltip where the exact fraction isn't the point.
+    private func playsHelpText(_ totalPlays: Double) -> String {
+        let rounded = Int(totalPlays.rounded())
+        return rounded == 1 ? "1 play" : "\(rounded) plays"
     }
 
     private func assignRandomKeysIfNeeded() {
@@ -349,6 +367,7 @@ struct SidebarFacetSection: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .help(totalPlays.flatMap { $0[item] }.map { playsHelpText($0) } ?? "")
         .contextMenu {
             if let onShowAllTracks {
                 Button("Show All Tracks") {
@@ -356,7 +375,7 @@ struct SidebarFacetSection: View {
                 }
             }
             if let onToggleIncompleteRating {
-                Toggle("Incomplete Rating", isOn: Binding(
+                Toggle("Incomplete Resonance", isOn: Binding(
                     get: { incompleteRatingItems?.contains(item) ?? false },
                     set: { _ in onToggleIncompleteRating(item) }
                 ))

@@ -655,7 +655,7 @@ struct TrackListView: View, Equatable {
             }
             .width(min: 40, ideal: 50, max: 90)
         } else if library.orderedVisibleColumns.indices.contains(0), library.orderedVisibleColumns[0] == .rating {
-            TableColumn("Rating", value: \.rating) { track in
+            TableColumn("Resonance", value: \.rating) { track in
                 RatingCellView(
                     rating: Binding(
                         get: { track.rating },
@@ -756,7 +756,7 @@ struct TrackListView: View, Equatable {
             }
             .width(min: 40, ideal: 50, max: 90)
         } else if library.orderedVisibleColumns.indices.contains(1), library.orderedVisibleColumns[1] == .rating {
-            TableColumn("Rating", value: \.rating) { track in
+            TableColumn("Resonance", value: \.rating) { track in
                 RatingCellView(
                     rating: Binding(
                         get: { track.rating },
@@ -857,7 +857,7 @@ struct TrackListView: View, Equatable {
             }
             .width(min: 40, ideal: 50, max: 90)
         } else if library.orderedVisibleColumns.indices.contains(2), library.orderedVisibleColumns[2] == .rating {
-            TableColumn("Rating", value: \.rating) { track in
+            TableColumn("Resonance", value: \.rating) { track in
                 RatingCellView(
                     rating: Binding(
                         get: { track.rating },
@@ -958,7 +958,7 @@ struct TrackListView: View, Equatable {
             }
             .width(min: 40, ideal: 50, max: 90)
         } else if library.orderedVisibleColumns.indices.contains(3), library.orderedVisibleColumns[3] == .rating {
-            TableColumn("Rating", value: \.rating) { track in
+            TableColumn("Resonance", value: \.rating) { track in
                 RatingCellView(
                     rating: Binding(
                         get: { track.rating },
@@ -1059,7 +1059,7 @@ struct TrackListView: View, Equatable {
             }
             .width(min: 40, ideal: 50, max: 90)
         } else if library.orderedVisibleColumns.indices.contains(4), library.orderedVisibleColumns[4] == .rating {
-            TableColumn("Rating", value: \.rating) { track in
+            TableColumn("Resonance", value: \.rating) { track in
                 RatingCellView(
                     rating: Binding(
                         get: { track.rating },
@@ -1160,7 +1160,7 @@ struct TrackListView: View, Equatable {
             }
             .width(min: 40, ideal: 50, max: 90)
         } else if library.orderedVisibleColumns.indices.contains(5), library.orderedVisibleColumns[5] == .rating {
-            TableColumn("Rating", value: \.rating) { track in
+            TableColumn("Resonance", value: \.rating) { track in
                 RatingCellView(
                     rating: Binding(
                         get: { track.rating },
@@ -1261,7 +1261,7 @@ struct TrackListView: View, Equatable {
             }
             .width(min: 40, ideal: 50, max: 90)
         } else if library.orderedVisibleColumns.indices.contains(6), library.orderedVisibleColumns[6] == .rating {
-            TableColumn("Rating", value: \.rating) { track in
+            TableColumn("Resonance", value: \.rating) { track in
                 RatingCellView(
                     rating: Binding(
                         get: { track.rating },
@@ -1362,7 +1362,7 @@ struct TrackListView: View, Equatable {
             }
             .width(min: 40, ideal: 50, max: 90)
         } else if library.orderedVisibleColumns.indices.contains(7), library.orderedVisibleColumns[7] == .rating {
-            TableColumn("Rating", value: \.rating) { track in
+            TableColumn("Resonance", value: \.rating) { track in
                 RatingCellView(
                     rating: Binding(
                         get: { track.rating },
@@ -1463,7 +1463,7 @@ struct TrackListView: View, Equatable {
             }
             .width(min: 40, ideal: 50, max: 90)
         } else if library.orderedVisibleColumns.indices.contains(8), library.orderedVisibleColumns[8] == .rating {
-            TableColumn("Rating", value: \.rating) { track in
+            TableColumn("Resonance", value: \.rating) { track in
                 RatingCellView(
                     rating: Binding(
                         get: { track.rating },
@@ -1564,7 +1564,7 @@ struct TrackListView: View, Equatable {
             }
             .width(min: 40, ideal: 50, max: 90)
         } else if library.orderedVisibleColumns.indices.contains(9), library.orderedVisibleColumns[9] == .rating {
-            TableColumn("Rating", value: \.rating) { track in
+            TableColumn("Resonance", value: \.rating) { track in
                 RatingCellView(
                     rating: Binding(
                         get: { track.rating },
@@ -1665,7 +1665,7 @@ struct TrackListView: View, Equatable {
             }
             .width(min: 40, ideal: 50, max: 90)
         } else if library.orderedVisibleColumns.indices.contains(10), library.orderedVisibleColumns[10] == .rating {
-            TableColumn("Rating", value: \.rating) { track in
+            TableColumn("Resonance", value: \.rating) { track in
                 RatingCellView(
                     rating: Binding(
                         get: { track.rating },
@@ -1766,7 +1766,7 @@ struct TrackListView: View, Equatable {
             }
             .width(min: 40, ideal: 50, max: 90)
         } else if library.orderedVisibleColumns.indices.contains(11), library.orderedVisibleColumns[11] == .rating {
-            TableColumn("Rating", value: \.rating) { track in
+            TableColumn("Resonance", value: \.rating) { track in
                 RatingCellView(
                     rating: Binding(
                         get: { track.rating },
@@ -1867,7 +1867,7 @@ struct TrackListView: View, Equatable {
             }
             .width(min: 40, ideal: 50, max: 90)
         } else if library.orderedVisibleColumns.indices.contains(12), library.orderedVisibleColumns[12] == .rating {
-            TableColumn("Rating", value: \.rating) { track in
+            TableColumn("Resonance", value: \.rating) { track in
                 RatingCellView(
                     rating: Binding(
                         get: { track.rating },
@@ -1968,7 +1968,7 @@ struct TrackListView: View, Equatable {
             }
             .width(min: 40, ideal: 50, max: 90)
         } else if library.orderedVisibleColumns.indices.contains(13), library.orderedVisibleColumns[13] == .rating {
-            TableColumn("Rating", value: \.rating) { track in
+            TableColumn("Resonance", value: \.rating) { track in
                 RatingCellView(
                     rating: Binding(
                         get: { track.rating },

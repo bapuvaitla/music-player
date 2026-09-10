@@ -134,6 +134,75 @@ check(chordNotes.count == 2, "expected a 2-note chord at t=2s, got \(chordNotes.
 check(Set(chordNotes.map { $0.string }) == [5, 4], "chord notes should keep their own distinct string/fret, got \(chordNotes)")
 print("PASS: MusicXML tab parsing (chord grouping, string/fret, sharps)")
 
+// MARK: - Mid-piece tempo change: a second `<sound tempo>` marking part
+// way through must (a) not retroactively rescale notes that already
+// elapsed at the old tempo, and (b) be queryable per-region via
+// `tempo(atTime:)`, not just the single flat `tempo` (whichever marking
+// parsing saw last) — this is what a metronome/count-in needs to click in
+// time with a *specific loop region*, not just the piece as a whole.
+let tempoChangeXML = """
+<?xml version="1.0" encoding="UTF-8"?>
+<score-partwise version="3.1">
+  <part id="P1">
+    <measure number="1">
+      <attributes><divisions>1</divisions></attributes>
+      <direction><sound tempo="60"/></direction>
+      <note>
+        <pitch><step>C</step><octave>4</octave></pitch>
+        <duration>1</duration>
+      </note>
+    </measure>
+    <measure number="2">
+      <direction><sound tempo="120"/></direction>
+      <note>
+        <pitch><step>D</step><octave>4</octave></pitch>
+        <duration>1</duration>
+      </note>
+      <note>
+        <pitch><step>E</step><octave>4</octave></pitch>
+        <duration>1</duration>
+      </note>
+    </measure>
+  </part>
+</score-partwise>
+"""
+let tempoChangeSequence = try! MusicXMLParser.parse(data: tempoChangeXML.data(using: .utf8)!)
+check(tempoChangeSequence.notes.count == 3, "expected 3 notes across the tempo change, got \(tempoChangeSequence.notes.count)")
+let tempoChangeTimes = tempoChangeSequence.notes.map { $0.startTime }
+// C4 at 60bpm: 1 quarter note = 1.0s, so it occupies [0, 1.0). D4/E4 at
+// 120bpm start after it: 1.0, 1.5. Not [0, 0.5, 1.0] — the bug this
+// guards against would compute that by applying 120bpm retroactively to
+// C4's already-elapsed tick too, letting D4 land *before* C4 even ends.
+check(tempoChangeTimes == [0, 1.0, 1.5], "notes after a tempo change should build on real elapsed time, not rescale ticks from before it — got \(tempoChangeTimes)")
+check(abs(tempoChangeSequence.tempo(atTime: 0.5) - 60) < 0.001, "tempo(atTime:) before the change should read 60, got \(tempoChangeSequence.tempo(atTime: 0.5))")
+check(abs(tempoChangeSequence.tempo(atTime: 1.2) - 120) < 0.001, "tempo(atTime:) after the change should read 120, got \(tempoChangeSequence.tempo(atTime: 1.2))")
+check(abs(tempoChangeSequence.tempo - 120) < 0.001, "the flat `tempo` (last marking seen) should still read 120, got \(tempoChangeSequence.tempo)")
+print("PASS: MusicXML mid-piece tempo change (accumulated timing + tempo(atTime:))")
+
+// MARK: - snapNotesNearBeats: real-world tab exports occasionally place a
+// note that's clearly meant to land right on the beat a handful of
+// milliseconds off it (tick-rounding noise) — a note that close to a
+// beat-grid point should land exactly on it, but a genuinely syncopated
+// note (far from any beat-grid point) must be left alone.
+// Two bar boundaries (0 and 2.0s) give a well-defined beat grid — [0,
+// 0.5, 1.0, 1.5] — independent of the notes themselves, rather than one
+// circularly derived from note end times.
+var snapSequence = NoteSequence(
+    notes: [
+        ScoreNote(startTime: 0.012, duration: 0.2, midiPitch: 60),  // 12ms off the downbeat — noise
+        ScoreNote(startTime: 0.583, duration: 0.2, midiPitch: 62),  // syncopated eighth-note, ~83ms off beat 2 — real
+        ScoreNote(startTime: 0.991, duration: 0.2, midiPitch: 64)   // 9ms early for beat 3 — noise
+    ],
+    barStartTimes: [0, 2.0],
+    beatsPerBar: 4
+)
+snapSequence.snapNotesNearBeats()
+let snappedTimes = snapSequence.notes.map { $0.startTime }
+check(snappedTimes[0] == 0, "a note 12ms off the downbeat should snap exactly onto it, got \(snappedTimes[0])")
+check(abs(snappedTimes[1] - 0.583) < 0.001, "a genuinely syncopated note (~83ms off the nearest beat) should be left alone, got \(snappedTimes[1])")
+check(snappedTimes[2] == 1.0, "a note 9ms early for the next beat should snap exactly onto it, got \(snappedTimes[2])")
+print("PASS: NoteSequence.snapNotesNearBeats corrects rounding noise without touching syncopation")
+
 // MARK: - Bar boundaries + hammer-on/pull-off/slide articulation, parsed
 // from the same real MuseScore-exported structure (<measure> elements,
 // <hammer-on>/<pull-off>/<slide> as siblings of <technical> inside
@@ -147,6 +216,57 @@ check(tabSequence.barStart(before: 3.0) == 0, "sitting exactly at a bar start an
 check(tabSequence.barStart(after: 0.5) == 3, "barStart(after:) from partway through bar 1 should land on bar 2's start, got \(tabSequence.barStart(after: 0.5))")
 check(tabSequence.barStart(after: 3.5) == tabSequence.duration, "barStart(after:) past the last bar should clamp to the sequence's end, got \(tabSequence.barStart(after: 3.5))")
 print("PASS: bar boundaries + hammer-on/pull-off/slide articulation parsing")
+
+// MARK: - reassignMisattachedArticulations: a real MuseScore export can
+// attach a hammer-on/pull-off "stop" marker to the *wrong* member of a
+// chord — confirmed against an actual file where the stop landed on the
+// chord's low-E/string-6 note instead of the string-2 note the hammer-on
+// was actually sliding/hammering into, even though MuseScore's own
+// on-screen rendering draws it correctly. A same-string requirement (a
+// hammer-on/pull-off/slide can only ever happen on one string) means the
+// marking has to move to whichever chord member actually shares the
+// origin note's string, or it silently fails to render anywhere at all.
+let misattachedXML = """
+<?xml version="1.0" encoding="UTF-8"?>
+<score-partwise version="3.1">
+  <part id="P1">
+    <measure number="1">
+      <attributes><divisions>1</divisions></attributes>
+      <direction><sound tempo="60"/></direction>
+      <note>
+        <pitch><step>D</step><octave>4</octave><alter>1</alter></pitch>
+        <duration>1</duration>
+        <notations>
+          <hammer-on type="start" number="1"/>
+          <technical><string>2</string><fret>2</fret></technical>
+        </notations>
+      </note>
+      <note>
+        <pitch><step>E</step><octave>2</octave></pitch>
+        <duration>1</duration>
+        <notations>
+          <hammer-on type="stop" number="1"/>
+          <technical><string>6</string><fret>0</fret></technical>
+        </notations>
+      </note>
+      <note>
+        <chord/>
+        <pitch><step>E</step><octave>4</octave></pitch>
+        <duration>1</duration>
+        <notations><technical><string>2</string><fret>3</fret></technical></notations>
+      </note>
+    </measure>
+  </part>
+</score-partwise>
+"""
+let misattachedSequence = try! MusicXMLParser.parse(data: misattachedXML.data(using: .utf8)!)
+let misattachedChord = misattachedSequence.notes(at: 1)
+check(misattachedChord.count == 2, "expected a 2-note chord at t=1s, got \(misattachedChord.count)")
+let wrongStringNote = misattachedChord.first { $0.string == 6 }
+let rightStringNote = misattachedChord.first { $0.string == 2 }
+check(wrongStringNote?.incomingArticulation == nil, "the mismatched-string chord member should lose the hammer-on marking it was incorrectly exported with")
+check(rightStringNote?.incomingArticulation == .hammerOn, "the same-string chord member should pick up the hammer-on marking instead, got \(String(describing: rightStringNote?.incomingArticulation))")
+print("PASS: NoteSequence.reassignMisattachedArticulations moves a hammer-on to the correct same-string chord member")
 
 // MARK: - NoteSequence.duration / averageBarLength must account for
 // trailing rest-only bars — a real bug found against an actual MuseScore
@@ -403,6 +523,46 @@ Task { @MainActor in
     print("PASS: smart playlist rules on non-tag fields (rating >=, artist equals, match-any)")
     print("PASS: smart playlist resolves by tag (\(resolved.count) matches)")
 
+    // MARK: - Smart playlist rule on an *album* characteristic
+    // (`.albumTotalPlays`) rather than a track's own field — the point
+    // being every track on a matching album should be included, not just
+    // whichever one happened to accumulate the plays. Explicitly forced
+    // onto the same album via `updateMetadata` (not just assumed from two
+    // fixture files' own embedded tags — several of the raw wav/aiff/flac
+    // conversions in Fixtures.swift carry no album tag at all and fall
+    // back to "Unknown Album", so two *different* fixture files aren't
+    // reliably on the same album without forcing it here).
+    let albumPlayTargets = Array(library.visibleTracks.prefix(2))
+    let untouchedTrack = library.visibleTracks.first { track in !albumPlayTargets.contains { $0.path == track.path } }
+    guard albumPlayTargets.count == 2, let untouchedTrack else {
+        fail("expected at least 3 visible tracks for the albumTotalPlays test")
+    }
+    for track in albumPlayTargets {
+        library.updateMetadata(
+            for: track, title: track.title, artist: track.artist, album: "Shared Plays Album",
+            genre: track.genre, year: track.year, trackNumber: track.trackNumber, discNumber: track.discNumber,
+            bpm: track.bpm, key: track.key ?? "", comments: track.comments ?? "", tags: track.tags
+        )
+    }
+    let albumPlayTrack1 = albumPlayTargets[0]
+    let albumPlayTrack2 = albumPlayTargets[1]
+    await library.recordPartialPlayAndWait(2.0, for: albumPlayTrack1)
+    await library.recordPartialPlayAndWait(1.0, for: albumPlayTrack2)
+    check(library.albumTotalPlays["Shared Plays Album"] == 3.0, "albumTotalPlays should sum both tracks' plays, got \(String(describing: library.albumTotalPlays["Shared Plays Album"]))")
+    library.createSmartPlaylist(
+        name: "Well-Played Albums",
+        rules: [SmartRule(field: .albumTotalPlays, comparison: .greaterThanOrEqual, value: "3")],
+        matchAll: true
+    )
+    guard let wellPlayedPlaylist = library.playlists.first(where: { $0.name == "Well-Played Albums" }) else {
+        fail("Well-Played Albums smart playlist not found")
+    }
+    let wellPlayedResolved = library.resolvedTracks(for: wellPlayedPlaylist)
+    check(wellPlayedResolved.contains { $0.path == albumPlayTrack1.path }, "albumTotalPlays>=3 should include the track that was actually played")
+    check(wellPlayedResolved.contains { $0.path == albumPlayTrack2.path }, "albumTotalPlays>=3 should include the album's *other* track too — it's an album characteristic, not a per-track one")
+    check(!wellPlayedResolved.contains { $0.path == untouchedTrack.path }, "albumTotalPlays>=3 should exclude a track from an album that was never played")
+    print("PASS: smart playlist rule on an album characteristic (albumTotalPlays) matches every track on a qualifying album")
+
     // Give the fire-and-forget persistence Tasks a moment to land, then
     // verify playlists actually round-trip through the SQLite store.
     try? await Task.sleep(nanoseconds: 300_000_000)
@@ -532,7 +692,12 @@ Task { @MainActor in
     slowEngine.play()
     try? await Task.sleep(nanoseconds: 400_000_000)
     check(slowEngine.isPlaying, "half-speed playback of a 1.0s note should still be playing after 0.4s of real time")
-    check(abs(slowEngine.currentTime - 0.2) < 0.1, "at half speed, ~0.4s of real time should read as ~0.2s of sequence time, got \(slowEngine.currentTime)")
+    // Accounts for `syncOffset` explicitly rather than assuming a fixed
+    // value — it defaults to 0 here (nothing sets it in this test), but
+    // reading it rather than hardcoding 0 keeps this from silently
+    // breaking if that default ever changes.
+    let expectedSlowTime = max(0, 0.4 * 0.5 - slowEngine.syncOffset)
+    check(abs(slowEngine.currentTime - expectedSlowTime) < 0.1, "at half speed, ~0.4s of real time should read as ~\(expectedSlowTime)s of sequence time (0.2s minus sync-offset compensation), got \(slowEngine.currentTime)")
     slowEngine.playbackRate = 1.0
     try? await Task.sleep(nanoseconds: 200_000_000)
     check(slowEngine.isPlaying, "changing rate back to normal mid-playback shouldn't crash or stop playback")
@@ -801,13 +966,102 @@ Task { @MainActor in
     let perfWrongNoteBuffer = synthesizeBuffer(playing: [perfActuallyPlayed], totalDuration: 2.0, sampleRate: evalSampleRate)
     let perfWrongNoteResult = PerformanceEvaluator.evaluate(samples: perfWrongNoteBuffer, sampleRate: evalSampleRate, against: perfWrongNoteSequence)
     check(!perfWrongNoteResult.perNote[0].hit, "a different pitch than the one expected should not register as a hit")
+    check(perfWrongNoteResult.perNote[0].missReason == .wrongNote, "a clearly different, clearly-pitched note actually played should be labeled wrongNote")
     print("PASS: PerformanceEvaluator rejects a wrong note")
+
+
+    // MARK: - Two closely-spaced but genuinely different notes, checked
+    // with a deliberately *wide* onset tolerance: the widened window for
+    // the second note also reaches back far enough to contain the first
+    // note's own onset. Picking the *first* onset within tolerance (in
+    // time order) rather than the *closest one to this note's own
+    // expected time* used to bind the second note's frequency check to
+    // the first note's onset instead of its own — this is exactly what
+    // made widening the timing-tolerance slider sometimes make pickup
+    // *worse* for a fast run of notes, not better.
+    let perfClosePair = NoteSequence(notes: [
+        ScoreNote(startTime: 0.3, duration: 0.14, midiPitch: 40),  // E2
+        ScoreNote(startTime: 0.45, duration: 0.4, midiPitch: 64)   // E4, 150ms later
+    ])
+    let perfClosePairBuffer = synthesizeBuffer(playing: perfClosePair.notes, totalDuration: 1.5, sampleRate: evalSampleRate)
+    let perfClosePairResult = PerformanceEvaluator.evaluate(samples: perfClosePairBuffer, sampleRate: evalSampleRate, against: perfClosePair, onsetTolerance: 0.3)
+    check(perfClosePairResult.perNote[0].hit, "the first of two closely-spaced notes should still be detected under a wide tolerance")
+    check(perfClosePairResult.perNote[1].hit, "the second of two closely-spaced notes should bind to its own onset, not the first note's, under a wide tolerance")
+    print("PASS: PerformanceEvaluator matches each note to its own closest onset, not just the first one in range")
+
+    // MARK: - Result.accuracy/correctCount count an early/late note as
+    // correct, not just an exact hit — something genuinely right was
+    // played, just not precisely on the beat, which shouldn't flunk the
+    // overall score the way an actual wrong/missed note does. The second
+    // note is played 0.35s ahead of its expected time — outside
+    // `onsetTolerance` (0.2s default, so not a plain hit) but inside
+    // `nearbyRadius` (0.6s, so it's labeled `.early` rather than `.missed`).
+    let perfTimingSequence = NoteSequence(notes: [
+        ScoreNote(startTime: 0.5, duration: 0.4, midiPitch: 40),  // E2 — played exactly on time
+        ScoreNote(startTime: 1.5, duration: 0.4, midiPitch: 45),  // A2 — played 0.35s early
+        ScoreNote(startTime: 2.5, duration: 0.4, midiPitch: 50)   // D3 — never played (clean miss)
+    ])
+    // `makeTone`'s abrupt cutoff (no release envelope) creates its own
+    // small onset-like spectral splatter right where a note stops, not
+    // just where it starts — playing the second note *short* (0.1s, well
+    // under its nominal duration) keeps that stop artifact safely away
+    // from `onsetTolerance` of the expected time, so it can't accidentally
+    // steal the "closest onset" match away from the note's real, early
+    // start.
+    let perfTimingBuffer = synthesizeBuffer(
+        playing: [
+            ScoreNote(startTime: 0.5, duration: 0.4, midiPitch: 40),
+            ScoreNote(startTime: 1.15, duration: 0.1, midiPitch: 45)
+        ],
+        totalDuration: 3.5, sampleRate: evalSampleRate
+    )
+    let perfTimingResult = PerformanceEvaluator.evaluate(samples: perfTimingBuffer, sampleRate: evalSampleRate, against: perfTimingSequence)
+    check(perfTimingResult.perNote[1].missReason == .early, "the early note should be labeled early, got \(String(describing: perfTimingResult.perNote[1].missReason))")
+    check(perfTimingResult.hitCount == 1, "hitCount should stay strict — only the exactly-on-time note")
+    check(perfTimingResult.correctCount == 2, "correctCount should include the early note alongside the exact hit, got \(perfTimingResult.correctCount)")
+    check(abs(perfTimingResult.accuracy - 2.0 / 3.0) < 0.001, "accuracy should be based on correctCount (2/3), got \(perfTimingResult.accuracy)")
+    print("PASS: PerformanceEvaluator.accuracy counts early/late notes as correct, not just exact hits")
 
     // Silence: nothing played at all should be a clean miss, not a crash.
     let perfSilenceBuffer = [Float](repeating: 0, count: Int(2.0 * evalSampleRate))
     let perfSilenceResult = PerformanceEvaluator.evaluate(samples: perfSilenceBuffer, sampleRate: evalSampleRate, against: perfSingleNoteSequence)
     check(!perfSilenceResult.perNote[0].hit, "silence should not register as a hit")
     print("PASS: PerformanceEvaluator handles silence without crashing")
+
+    // MARK: - Quiet ambient noise (not true silence, and not a played
+    // note) must not register as a hit — a purely *relative* onset
+    // threshold has no floor: in near-silence, `mean`/`variance` shrink
+    // to near-zero, so ordinary room noise trivially clears "louder than
+    // whatever's around it" and gets reported as a real onset. This is
+    // what let an expected low-string note come back "hit" even while
+    // nothing was actually played.
+    let quietNoiseBuffer: [Float] = (0..<Int(2.0 * evalSampleRate)).map { _ in Float.random(in: -0.003...0.003) }
+    let perfNoiseResult = PerformanceEvaluator.evaluate(samples: quietNoiseBuffer, sampleRate: evalSampleRate, against: perfSingleNoteSequence)
+    check(!perfNoiseResult.perNote[0].hit, "quiet ambient noise should not register as a hit for an expected note")
+    print("PASS: PerformanceEvaluator rejects quiet ambient noise as a false hit")
+
+    // MARK: - A high note played slightly out of tune (realistic tuning
+    // drift, not a wrong note) should still register as a hit. A fixed-
+    // bin-count frequency search window gave a much tighter *cents*
+    // tolerance at high frequencies than low ones (~56 cents for a low
+    // E's ~82Hz fundamental, under 10 cents near 1kHz) — tighter than
+    // ordinary tuning drift, which is why high notes were going almost
+    // entirely undetected.
+    let highNoteMIDIPitch = 76 // E5, ~659.3Hz
+    let highNoteTargetFrequency = PerformanceEvaluator.frequency(forMIDIPitch: highNoteMIDIPitch)
+    let highNoteSharpFrequency = highNoteTargetFrequency * pow(2.0, 15.0 / 1200.0) // 15 cents sharp
+    var highNoteBuffer = [Float](repeating: 0, count: Int(2.0 * evalSampleRate))
+    let highNoteTone = makeTone(frequency: highNoteSharpFrequency, duration: 1.0, sampleRate: evalSampleRate)
+    let highNoteStartSample = Int(0.5 * evalSampleRate)
+    for i in 0..<highNoteTone.count {
+        let index = highNoteStartSample + i
+        guard index < highNoteBuffer.count else { break }
+        highNoteBuffer[index] += highNoteTone[i]
+    }
+    let highNoteSequence = NoteSequence(notes: [ScoreNote(startTime: 0.5, duration: 1.0, midiPitch: highNoteMIDIPitch)])
+    let highNoteResult = PerformanceEvaluator.evaluate(samples: highNoteBuffer, sampleRate: evalSampleRate, against: highNoteSequence)
+    check(highNoteResult.perNote[0].hit, "a high note played ~15 cents sharp (realistic tuning drift) should still register as a hit")
+    print("PASS: PerformanceEvaluator tolerates realistic tuning drift on a high note")
 
     // Vocal bonus: open-ended autocorrelation pitch tracking should land
     // close to the actual sung pitch, not just report hit/miss.

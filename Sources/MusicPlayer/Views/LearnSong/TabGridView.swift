@@ -51,10 +51,42 @@ struct TabGridView: View {
     /// hammer-on/pull-off/slide tie glyphs on the top string, so neither
     /// gets clipped by the canvas's own top edge.
     private let headerHeight: CGFloat = 22
-    /// Nudges every note a little right of its exact time position so the
-    /// first note of a bar doesn't land right on top of that bar's
-    /// dividing line.
+    /// Nudges a note (or the playhead — see `paddingFor`) a little right
+    /// of its exact time position so it doesn't render right on top of
+    /// the interior-beat tick it lines up with (see the tick-drawing loop
+    /// below, which applies this same offset to keep a note and its tick
+    /// coincident). Not applied at a time that lands exactly on an
+    /// *interior* bar line within the current line (see `paddingFor`) —
+    /// that content should sit right on the bar line itself, on the grid,
+    /// rather than floating to its right.
     private let notePadding: CGFloat = 12
+
+    /// `notePadding` for something at a given time on a given line — 0
+    /// when that time lands exactly on a bar's start *and* that bar isn't
+    /// the line's own first bar, `notePadding` otherwise. Two things share
+    /// this, and both need the exact same rule to stay visually aligned
+    /// with each other: a note (see `fretMarker`'s call site) and the
+    /// playhead (below) — before this was unified, the playhead kept
+    /// using the flat `notePadding` while a first-beat note's own offset
+    /// had already dropped to 0, so the two visibly drifted apart by
+    /// `notePadding`'s width even though their underlying times matched
+    /// exactly.
+    ///
+    /// The line's own first bar is deliberately excluded even when its
+    /// start coincides with a bar: it has no drawn dividing line to align
+    /// to (see the bar-line stroke below, which only draws one when
+    /// `barStart > lineStart`) — sitting at the unpadded position there
+    /// instead put a note's glyph half off the canvas's own left edge,
+    /// overlapping the string-label column beside it. Note timings land
+    /// exactly on a bar start here (not merely close) once
+    /// `NoteSequence.snapNotesNearBeats` has run during parsing, so a
+    /// tight epsilon is safe.
+    private func paddingFor(time: TimeInterval, lineStart: TimeInterval) -> CGFloat {
+        let onInteriorBarLine = sequence.barStartTimes.contains { barStart in
+            barStart > lineStart && abs(barStart - time) < 0.001
+        }
+        return onInteriorBarLine ? 0 : notePadding
+    }
     /// Bar numbers are reference info, not core to reading the tab — off
     /// by default so the view opens calm (just strings/frets/playhead/
     /// ties/beat ticks), with detail one click away.
@@ -64,8 +96,8 @@ struct TabGridView: View {
     /// Room below the last string for a missed-note's "late"/"early"/
     /// "wrong"/"miss" label — without it, the bottom string's label had
     /// nowhere to render but past the canvas's own bottom edge, and got
-    /// clipped away entirely.
-    private let footerHeight: CGFloat = 14
+    /// clipped away entirely. Bumped alongside that label's own font size.
+    private let footerHeight: CGFloat = 18
 
     private var contentHeight: CGFloat {
         headerHeight + CGFloat(stringLabels.count) * rowHeight + footerHeight
@@ -73,6 +105,19 @@ struct TabGridView: View {
 
     private func stringY(_ index: Int) -> CGFloat {
         headerHeight + rowHeight * CGFloat(index) + rowHeight / 2
+    }
+
+    /// A real guitar's strings get progressively thicker for lower
+    /// pitches (a wound low E vs. a thin plain high e) — matching that in
+    /// the drawn line weight is a small, cheap way for this to read as an
+    /// actual set of strings rather than six identical ruled lines.
+    /// `stringLabels` goes high e (index 0) to low E (index 5), the same
+    /// direction real strings get thicker.
+    private func stringLineWidth(_ index: Int) -> CGFloat {
+        let thinnest: CGFloat = 0.75
+        let thickest: CGFloat = 2.5
+        let fraction = CGFloat(index) / CGFloat(max(stringLabels.count - 1, 1))
+        return thinnest + (thickest - thinnest) * fraction
     }
 
     var body: some View {
@@ -238,7 +283,7 @@ struct TabGridView: View {
                             var path = Path()
                             path.move(to: CGPoint(x: 0, y: y))
                             path.addLine(to: CGPoint(x: size.width, y: y))
-                            context.stroke(path, with: .color(.secondary.opacity(0.32)), lineWidth: 1)
+                            context.stroke(path, with: .color(.secondary.opacity(0.32)), lineWidth: stringLineWidth(index))
                         }
 
                         for (barIndex, barStart) in sequence.barStartTimes.enumerated() where range.contains(barStart) {
@@ -297,7 +342,7 @@ struct TabGridView: View {
                         context.stroke(closingLine, with: .color(.primary.opacity(0.4)), lineWidth: 1.5)
 
                         if range.contains(currentTime) {
-                            let playheadX = CGFloat(currentTime - lineStart) * pixelsPerSecond + notePadding
+                            let playheadX = CGFloat(currentTime - lineStart) * pixelsPerSecond + paddingFor(time: currentTime, lineStart: lineStart)
                             var playhead = Path()
                             playhead.move(to: CGPoint(x: playheadX, y: headerHeight))
                             playhead.addLine(to: CGPoint(x: playheadX, y: size.height))
@@ -312,7 +357,7 @@ struct TabGridView: View {
                         if let string = note.string, (1...stringLabels.count).contains(string) {
                             fretMarker(for: note)
                                 .position(
-                                    x: CGFloat(note.startTime - lineStart) * pixelsPerSecond + notePadding,
+                                    x: CGFloat(note.startTime - lineStart) * pixelsPerSecond + paddingFor(time: note.startTime, lineStart: lineStart),
                                     y: stringY(string - 1)
                                 )
                         }
@@ -331,26 +376,45 @@ struct TabGridView: View {
         }
     }
 
+    /// A finger-position marker, not just a bare number floating over the
+    /// string — a filled or outlined circle, the way a real fretboard
+    /// diagram (or Rocksmith/Yousician-style tab) shows where to press,
+    /// rather than a plain digit that happens to sit on a line. Outlined
+    /// and neutral before it's scored (a "here's where you're headed"
+    /// target); once evaluated, fills solid in the result's color with a
+    /// bold, white digit — the filled/bold treatment for a played note is
+    /// deliberate, matching the same "the part you actually want to read
+    /// at a glance should be the visually heavier one" reasoning as
+    /// `isEvaluated`'s doc comment below. A solid fill also fully covers
+    /// the string line behind it, the way a real finger actually does.
     @ViewBuilder
     private func fretMarker(for note: ScoreNote) -> some View {
-        Text("\(note.fret ?? 0)")
-            .font(.custom("HelveticaNeue-Light", size: 19))
-            .fontWeight(isEvaluated(note) ? .regular : .bold)
-            .monospacedDigit()
-            .foregroundStyle(markerForeground(for: note))
-            .frame(width: 26, height: 24)
-            // An overlay, not layout content — keeps the fret number's own
-            // centering on the string line untouched regardless of whether
-            // a label is present.
-            .overlay(alignment: .bottom) {
-                if let label = missReasonLabel(for: note) {
-                    Text(label)
-                        .font(.system(size: 7, weight: .semibold))
-                        .foregroundStyle(markerForeground(for: note))
-                        .fixedSize()
-                        .offset(y: 11)
-                }
+        let color = markerForeground(for: note)
+        let evaluated = isEvaluated(note)
+        ZStack {
+            Circle()
+                .fill(evaluated ? color : Color.panelBackground)
+            Circle()
+                .strokeBorder(color, lineWidth: evaluated ? 0 : 1.25)
+            Text("\(note.fret ?? 0)")
+                .font(.custom("HelveticaNeue-Light", size: 14))
+                .fontWeight(evaluated ? .bold : .regular)
+                .monospacedDigit()
+                .foregroundStyle(evaluated ? Color.white : color)
+        }
+        .frame(width: 24, height: 24)
+        // An overlay, not layout content — keeps the marker's own
+        // centering on the string line untouched regardless of whether a
+        // label is present.
+        .overlay(alignment: .bottom) {
+            if let label = missReasonLabel(for: note) {
+                Text(label)
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(color)
+                    .fixedSize()
+                    .offset(y: 15)
             }
+        }
     }
 
     // "late"/"early"/"wrong"/"miss" printed right under a missed note, once
@@ -379,7 +443,7 @@ struct TabGridView: View {
             guard range.contains(note.startTime), index > 0, let articulation = note.incomingArticulation else { continue }
             let previous = sequence.notes[index - 1]
             guard let string = note.string, previous.string == string, (1...stringLabels.count).contains(string) else { continue }
-            let x2 = CGFloat(note.startTime - lineStart) * pixelsPerSecond + notePadding
+            let x2 = CGFloat(note.startTime - lineStart) * pixelsPerSecond + paddingFor(time: note.startTime, lineStart: lineStart)
             let y = stringY(string - 1)
             let label = switch articulation {
             case .hammerOn: "H"
@@ -388,7 +452,7 @@ struct TabGridView: View {
             }
 
             if previous.startTime >= lineStart {
-                let x1 = CGFloat(previous.startTime - lineStart) * pixelsPerSecond + notePadding
+                let x1 = CGFloat(previous.startTime - lineStart) * pixelsPerSecond + paddingFor(time: previous.startTime, lineStart: lineStart)
                 guard x2 > x1 else { continue }
                 var tie = Path()
                 tie.move(to: CGPoint(x: x1 + 10, y: y - 12))
@@ -420,17 +484,31 @@ struct TabGridView: View {
         evaluation?.perNote.contains(where: { $0.note == note }) ?? false
     }
 
-    // Bold and neutral until a note's been played and scored — then it
-    // switches to regular weight, colored by the result: green for a hit,
-    // red for a clean miss or a confidently-wrong pitch (nothing was
-    // close, or the wrong thing was clearly there), amber for early/late
-    // (something right was there, just off in time — a lesser miss).
+    // Regular weight and neutral until a note's been played and scored —
+    // then it switches to bold (see `fretMarker`'s `fontWeight`), colored
+    // by the result: green for a hit, red for a clean miss or a
+    // confidently-wrong pitch (nothing was close, or the wrong thing was
+    // clearly there), amber for early/late (something right was there,
+    // just off in time — a lesser miss). Bolding a played note rather
+    // than an upcoming one makes the scored, colored part of the take —
+    // the thing you actually want to read at a glance — the visually
+    // heavier one, instead of every note-yet-to-come outweighing it.
+    /// Darker than SwiftUI's stock `.green`/`.orange`/`.red` — this is
+    /// what a filled marker (see `fretMarker`) is colored with, behind a
+    /// white digit, and the stock system colors (green and orange
+    /// especially) are bright enough that white barely showed up against
+    /// them. Still reads unambiguously as green/amber/red, just deep
+    /// enough to hold real contrast against white.
+    private static let hitColor = Color(red: 0.13, green: 0.55, blue: 0.23)
+    private static let missColor = Color(red: 0.72, green: 0.14, blue: 0.14)
+    private static let lateColor = Color(red: 0.78, green: 0.42, blue: 0.02)
+
     private func markerForeground(for note: ScoreNote) -> Color {
         guard let result = evaluation?.perNote.first(where: { $0.note == note }) else { return .primary }
-        if result.hit { return .green }
+        if result.hit { return Self.hitColor }
         switch result.missReason {
-        case .missed, .wrongNote, .none: return .red
-        case .early, .late: return .orange
+        case .missed, .wrongNote, .none: return Self.missColor
+        case .early, .late: return Self.lateColor
         }
     }
 }

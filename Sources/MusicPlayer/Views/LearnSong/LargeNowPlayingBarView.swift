@@ -23,6 +23,15 @@ struct LargeNowPlayingBarView: View {
     @State private var loopEnabled: Bool
     @State private var loopStart: TimeInterval
     @State private var loopEnd: TimeInterval
+    /// The last value *this* control itself wrote into `loopRegion` — see
+    /// `PlaybackLoopControl.lastWrittenRegion` for the full story. Without
+    /// this, a region set from a practice pane's own loop control (which
+    /// writes the same shared `loopRegion`) sat invisible to this
+    /// control's still-stale local state — and the very next time
+    /// anything here called `applyLoopRegion()` (pressing Play while the
+    /// song wasn't already loaded is one such spot, a few lines down)
+    /// would silently stomp that region right back to nil.
+    @State private var lastWrittenRegion: ClosedRange<TimeInterval>?
 
     init(track: Track, loopRegion: Binding<ClosedRange<TimeInterval>?>) {
         self.track = track
@@ -31,6 +40,7 @@ struct LargeNowPlayingBarView: View {
         _loopEnabled = State(initialValue: initial != nil)
         _loopStart = State(initialValue: initial?.lowerBound ?? 0)
         _loopEnd = State(initialValue: initial?.upperBound ?? 10)
+        _lastWrittenRegion = State(initialValue: initial)
     }
 
     private var isThisTrackCurrent: Bool { player.currentTrack?.id == track.id }
@@ -127,17 +137,23 @@ struct LargeNowPlayingBarView: View {
         .onChange(of: loopEnabled) { _, _ in applyLoopRegion() }
         .onChange(of: loopStart) { _, _ in applyLoopRegion() }
         .onChange(of: loopEnd) { _, _ in applyLoopRegion() }
+        .onChange(of: loopRegion) { _, newValue in
+            guard newValue != lastWrittenRegion else { return }
+            lastWrittenRegion = newValue
+            loopEnabled = newValue != nil
+            if let newValue {
+                loopStart = newValue.lowerBound
+                loopEnd = newValue.upperBound
+            }
+            if isThisTrackCurrent { player.loopRegion = newValue }
+        }
     }
 
     private func applyLoopRegion() {
-        if loopEnabled, loopEnd > loopStart {
-            let region = loopStart...loopEnd
-            loopRegion = region
-            if isThisTrackCurrent { player.loopRegion = region }
-        } else {
-            loopRegion = nil
-            if isThisTrackCurrent { player.loopRegion = nil }
-        }
+        let region = (loopEnabled && loopEnd > loopStart) ? loopStart...loopEnd : nil
+        lastWrittenRegion = region
+        loopRegion = region
+        if isThisTrackCurrent { player.loopRegion = region }
     }
 
     private func timeString(_ time: TimeInterval) -> String {
