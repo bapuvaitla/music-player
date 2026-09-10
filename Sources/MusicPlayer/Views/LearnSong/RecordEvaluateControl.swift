@@ -48,7 +48,13 @@ struct RecordEvaluateControl: View {
 
     private var regionStart: TimeInterval { loopRegion?.lowerBound ?? 0 }
     private var regionEnd: TimeInterval { loopRegion?.upperBound ?? sequence.duration }
-    private var beatInterval: TimeInterval { 60.0 / max(sequence.tempo, 1) }
+    /// Scaled by the practice-speed slider (`engine.playbackRate`) — the
+    /// metronome previously always clicked at the sequence's nominal
+    /// tempo regardless of that slider, so slowing playback down to
+    /// practice a hard passage left the click racing ahead of the actual
+    /// notes instead of staying with them. Dividing (not multiplying) is
+    /// correct: half the rate means double the time between beats.
+    private var beatInterval: TimeInterval { 60.0 / max(sequence.tempo, 1) / engine.playbackRate }
     private var optionsActive: Bool { leadInEnabled || metronomeEnabled }
 
     var body: some View {
