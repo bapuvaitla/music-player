@@ -2,8 +2,19 @@ import SwiftUI
 
 /// A scrub bar with two draggable handles marking a loop region, drawn as
 /// a highlighted band between them. Used by the song's transport
-/// (`LargeNowPlayingBarView`) and the tab/vocal panes (`PlaybackLoopControl`)
-/// alike.
+/// (`LargeNowPlayingBarView`) and each practice pane/full score
+/// (`PlaybackLoopControl`) alike — all of them read and write the same
+/// one shared loop region (see `LearnSongView.applyLoopRegionToEngines`),
+/// not a region of their own.
+///
+/// `barTimes`/`snapPoints` (below) are proportioned against *this specific
+/// call's* `duration` — `LargeNowPlayingBarView` deliberately leaves them
+/// empty rather than passing a practiced stave's own bar times, since that
+/// stave's `NoteSequence` timeline isn't guaranteed to span the same
+/// length as the real song audio (`player.duration`) this bar is actually
+/// scaled to; plotting one against the other bunched every bar tick up at
+/// the left edge. `PlaybackLoopControl` is safe because it always passes
+/// a sequence's bar times alongside that *same* sequence's own duration.
 ///
 /// Uses a named coordinate space so each handle's drag (and the bar's own
 /// tap-to-seek) reports its position relative to the *whole bar*, not the

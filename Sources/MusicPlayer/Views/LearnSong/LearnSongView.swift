@@ -43,6 +43,21 @@ struct LearnSongView: View {
 
     @State private var importErrorMessage: String?
     @State private var showingTuner = false
+    /// Manual last-mile trim on top of each engine's own automatic
+    /// output-latency compensation — see `InstrumentTransportView`'s sync
+    /// popover. One shared value applied to every engine (tab/vocal/
+    /// notation/full-score) rather than tuned per-staff, and persisted
+    /// so it's set once per setup, not every session.
+    // Key changed from the old "learnSongSyncOffsetMs" (not just renamed)
+    // deliberately — that key held a value under the old two-layer
+    // automatic-plus-manual scheme (a manual trim of 75ms, layered on top
+    // of an automatic ~106ms estimate that's now gone), which isn't a
+    // valid value under this single-number scheme. The default here,
+    // 31ms, is the actual net compensation the two old values worked out
+    // to together (106 subtracted, 75 added back) — empirically correct,
+    // still a starting point to re-drag from on new hardware, not an
+    // authority to trust blindly.
+    @AppStorage("learnSongSyncOffsetMsV2") private var syncOffsetMs: Double = 31
     /// Which of the three staves is currently shown filling the window, or
     /// the full-score landing screen if none has been picked yet. See
     /// `PracticeSelection` (declared alongside `FullScoreView`, which also
@@ -53,6 +68,7 @@ struct LearnSongView: View {
         case tab, vocal, notation, fullScore
     }
 
+
     var body: some View {
         VStack(spacing: 16) {
             header
@@ -61,7 +77,7 @@ struct LearnSongView: View {
             Group {
                 switch practiceSelection {
                 case .fullScore:
-                    FullScoreView(musicXMLData: fullScoreRawData, parts: fullScoreParts, engine: fullScoreEngine, onImportFile: { presentImporter(kind: .fullScore) }, showingTuner: $showingTuner)
+                    FullScoreView(musicXMLData: fullScoreRawData, parts: fullScoreParts, engine: fullScoreEngine, onImportFile: { presentImporter(kind: .fullScore) }, showingTuner: $showingTuner, syncOffsetMs: $syncOffsetMs, loopRegion: $loopRegion)
                 case .tab:
                     pane(title: "Guitar Tab", sequence: tabSequence, filePath: tabFilePath, engine: tabEngine, recorder: tabRecorder, isVocal: false, evaluation: $tabEvaluation, showingTuner: $showingTuner) {
                         presentImporter(kind: .tab)
@@ -100,8 +116,14 @@ struct LearnSongView: View {
         .onAppear {
             loadSavedSession()
             prewarmCurrentRecorder()
+            applySyncOffsetToEngines()
+            applyLoopRegionToEngines()
         }
-        .onChange(of: loopRegion) { _, _ in saveSession() }
+        .onChange(of: syncOffsetMs) { _, _ in applySyncOffsetToEngines() }
+        .onChange(of: loopRegion) { _, _ in
+            saveSession()
+            applyLoopRegionToEngines()
+        }
         .onChange(of: practiceSelection) { oldValue, _ in
             pauseEngine(for: oldValue)
             saveSession()
@@ -180,6 +202,39 @@ struct LearnSongView: View {
     /// up that one's recorder — on appear, and again whenever the
     /// selected stave changes — avoids the pile-up while still avoiding
     /// the first-take reconfiguration glitch `prewarm()` exists for.
+    /// Pushes the persisted `syncOffsetMs` into every engine's own
+    /// `syncOffset` — each engine keeps its own copy rather than reading
+    /// `syncOffsetMs` live, so this has to be called whenever the value
+    /// changes (see the `onChange` above) as well as once at launch,
+    /// since a freshly-constructed engine otherwise starts at its own
+    /// default of 0 regardless of what's persisted.
+    private func applySyncOffsetToEngines() {
+        let offsetSeconds = syncOffsetMs / 1000.0
+        tabEngine.syncOffset = offsetSeconds
+        vocalEngine.syncOffset = offsetSeconds
+        notationEngine.syncOffset = offsetSeconds
+        fullScoreEngine.syncOffset = offsetSeconds
+    }
+
+    /// Pushes the one loop region set on the song's own transport
+    /// (`LargeNowPlayingBarView`, bound to `loopRegion` here) into every
+    /// practice engine too, so it's a single region shared across the
+    /// song, every stave's reference playback, and "Play Along"/"Sing
+    /// Along" — not a separate one re-drawn per pane. `RecordEvaluateControl`
+    /// still momentarily clears its own engine's copy while actively
+    /// recording (see its `startRecording`/`finishRecording`) so its own
+    /// timer — not the engine's built-in auto-loop — is what decides when
+    /// a take ends; this is what that copy resets back to once a take
+    /// finishes. A freshly-constructed engine otherwise starts at its own
+    /// default of nil regardless of what's already set here, so this also
+    /// has to run once at launch, same as `applySyncOffsetToEngines`.
+    private func applyLoopRegionToEngines() {
+        tabEngine.loopRegion = loopRegion
+        vocalEngine.loopRegion = loopRegion
+        notationEngine.loopRegion = loopRegion
+        fullScoreEngine.loopRegion = loopRegion
+    }
+
     private func prewarmCurrentRecorder() {
         switch practiceSelection {
         case .fullScore: break
@@ -233,15 +288,16 @@ struct LearnSongView: View {
                 // tab. Given its own room above/below rather than sitting
                 // flush against the Import row and loop control, now that
                 // it's a wider, multi-cluster row in its own right.
-                InstrumentTransportView(engine: engine, sequence: sequence, leadingInset: isVocal ? 0 : 22, showingTuner: showingTuner, showsTuner: !isVocal)
+                InstrumentTransportView(engine: engine, sequence: sequence, leadingInset: isVocal ? 0 : 22, showingTuner: showingTuner, showsTuner: !isVocal, syncOffsetMs: $syncOffsetMs)
                     .padding(.vertical, 4)
-                // Keyed on the file path so replacing this pane's file
-                // gets a fresh loop control instead of reusing stale
-                // start/end values sized for the old sequence. Sits above
-                // the score — you set up the section you're looping before
-                // following along, not after.
+                // Bound to the one shared `$loopRegion` (also settable
+                // from the song's own transport below), not a per-pane
+                // region of its own — kept here too, not just down there,
+                // because this is the convenient place to actually see
+                // and drag it against this stave's own bars while
+                // practicing, without scrolling away from the score.
                 PlaybackLoopControl(
-                    loopRegion: Binding(get: { engine.loopRegion }, set: { engine.loopRegion = $0 }),
+                    loopRegion: $loopRegion,
                     duration: sequence.duration,
                     currentTime: engine.currentTime,
                     onSeek: { engine.seek(to: $0) },
@@ -256,7 +312,7 @@ struct LearnSongView: View {
                     engine: engine,
                     recorder: recorder,
                     sequence: sequence,
-                    loopRegion: engine.loopRegion,
+                    loopRegion: loopRegion,
                     isVocal: isVocal,
                     result: evaluation
                 )

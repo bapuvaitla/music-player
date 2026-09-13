@@ -15,6 +15,33 @@ public final class NotePlaybackEngine: ObservableObject {
     @Published public private(set) var isPlaying = false
     @Published public private(set) var currentTime: TimeInterval = 0
 
+    /// How many seconds of real output latency to compensate for when
+    /// computing `currentTime` (see `startTimer`) — subtracted from the
+    /// idealized wall-clock estimate, since real audio always becomes
+    /// audible some amount of time *after* that estimate says it should.
+    ///
+    /// A single, user-set number, not a hardcoded guess automatically
+    /// derived from `AVAudioEngine`'s own `presentationLatency` reading.
+    /// An earlier version tried exactly that (with a fudge-factor on top,
+    /// then a separate manual trim added back *on top of* the fudged
+    /// automatic value) — real-world calibration showed
+    /// `presentationLatency` isn't a trustworthy stand-in for the true
+    /// perceptual gap on real (especially Bluetooth) hardware, and the
+    /// two-layer "automatic estimate plus manual delta" scheme made it
+    /// genuinely hard to reason about what was actually being applied
+    /// (their combined effect wasn't the sum of the two numbers — one
+    /// added, one subtracted — which is exactly the kind of thing worth
+    /// avoiding). One transparent value, set once by ear via
+    /// `SyncOffsetButton`'s slider and persisted from then on, is simpler
+    /// and is exactly what's being applied — no hidden math. Defaults to
+    /// 0 here; `LearnSongView`'s persisted `@AppStorage` default is 31ms
+    /// instead — the empirical value this codebase's own hardware/setup
+    /// converged on through that earlier two-layer scheme before it was
+    /// simplified away, kept as a reasonable starting point to drag from
+    /// on a fresh install, not a value derived from anything measured at
+    /// runtime.
+    public var syncOffset: TimeInterval = 0
+
     /// 0...1. Zero mutes output but playback keeps running — so you can
     /// follow along silently (e.g. while being evaluated) without needing
     /// a separate pause state.
@@ -54,7 +81,16 @@ public final class NotePlaybackEngine: ObservableObject {
     private var sequence = NoteSequence(notes: [])
     private var scheduledWorkItems: [DispatchWorkItem] = []
     private var activeMIDINotes: Set<UInt8> = []
-    private var startWallClock: Date?
+    /// Exposed read-only (see `play()`'s doc comment for why this is
+    /// captured from inside a dispatched closure rather than synchronously)
+    /// so a caller recording alongside playback — `RecordEvaluateControl`
+    /// is the one that needs it — can work out the real wall-clock moment
+    /// any given piece-time became audible, instead of guessing at it from
+    /// a nominal tempo calculation. `Date` math against this and
+    /// `playbackRate` reproduces exactly what `startTimer()`'s own
+    /// `idealTime` computes, just for a caller-chosen piece-time instead
+    /// of "now."
+    public private(set) var startWallClock: Date?
     private var pausedAt: TimeInterval = 0
     private var timer: Timer?
 
@@ -161,8 +197,25 @@ public final class NotePlaybackEngine: ObservableObject {
         guard !isPlaying, !sequence.notes.isEmpty else { return }
         if !engine.isRunning { startEngine() }
         isPlaying = true
-        schedule(from: pausedAt)
-        startWallClock = Date().addingTimeInterval(-pausedAt / playbackRate)
+        let offset = pausedAt
+        schedule(from: offset)
+        // Captured from *inside* a dispatched closure, not synchronously
+        // here — `schedule(from:)` just queued the first note's own
+        // "play now" work item via the same `DispatchQueue.main.asyncAfter`
+        // mechanism; queuing this anchor the same way means `Date()` here
+        // reflects the moment the main queue actually got around to
+        // firing it, not the instant `play()` was called. Any scheduling
+        // slop right at the start of a take (worst right after a cold
+        // engine start, when the sampler is still loading its
+        // instrument) would otherwise get silently baked into every
+        // future `currentTime` estimate — the piece would look like it
+        // left beat one slightly early for the entire take.
+        let anchorItem = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.startWallClock = Date().addingTimeInterval(-offset / self.playbackRate)
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now(), execute: anchorItem)
+        scheduledWorkItems.append(anchorItem)
         startTimer()
     }
 
@@ -232,7 +285,15 @@ public final class NotePlaybackEngine: ObservableObject {
         let newTimer = Timer(timeInterval: 0.05, repeats: true) { [weak self] _ in
             Task { @MainActor in
                 guard let self, let start = self.startWallClock else { return }
-                self.currentTime = Date().timeIntervalSince(start) * self.playbackRate
+                let idealTime = Date().timeIntervalSince(start) * self.playbackRate
+                // `startWallClock` is the instant a note's DispatchWorkItem
+                // was *scheduled*, not when it actually became audible —
+                // Core Audio's real output latency (buffer priming,
+                // hardware/driver delay) sits between the two, so the
+                // wall-clock estimate alone always reads slightly ahead of
+                // what you're actually hearing. `syncOffset` is that gap,
+                // as measured by ear on this setup — see its doc comment.
+                self.currentTime = max(0, idealTime - self.syncOffset)
                 if let loopRegion = self.loopRegion, self.currentTime >= loopRegion.upperBound {
                     self.seek(to: loopRegion.lowerBound)
                     return

@@ -71,7 +71,8 @@ struct SidebarView: View {
                             onClear: { library.selectedAlbums.removeAll() },
                             onShowAllTracks: { library.unhideAllTracks(inAlbum: $0) },
                             incompleteRatingItems: library.incompleteRatingAlbums,
-                            onToggleIncompleteRating: { library.toggleIncompleteRating(forAlbum: $0) }
+                            onToggleIncompleteRating: { library.toggleIncompleteRating(forAlbum: $0) },
+                            totalPlays: library.albumTotalPlays
                         )
                     }
 

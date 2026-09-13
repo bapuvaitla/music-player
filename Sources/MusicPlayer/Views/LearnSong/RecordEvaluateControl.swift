@@ -22,11 +22,18 @@ struct RecordEvaluateControl: View {
     @StateObject private var metronome = MetronomeEngine()
     @State private var leadInEnabled = true
     @State private var metronomeEnabled = true
+    /// When on, and a loop region is set, reaching the end of the region
+    /// during a take doesn't stop it — a fresh take starts right back up
+    /// at `regionStart` automatically, over and over, until "Stop" is
+    /// pressed. Each lap is a genuinely new, independently-scored take
+    /// (see the `liveEvaluationTimer` closure below), not one long
+    /// recording spanning every lap — simpler, and it keeps a very long
+    /// drill session from growing one unbounded in-memory buffer.
+    @State private var loopForever = false
     @State private var isRecordingSession = false
     @State private var isCountingIn = false
     @State private var savedLoopRegion: ClosedRange<TimeInterval>?
     @State private var showingOptionsPopover = false
-    @State private var showingSpeedPopover = false
     @State private var liveEvaluationTimer: Timer?
     /// How far a detected onset may fall from a note's expected time and
     /// still count as an attempt at it — user-adjustable so a run of
@@ -35,27 +42,76 @@ struct RecordEvaluateControl: View {
     /// if they turn into hits. Persisted, since it's as much a difficulty
     /// setting as a diagnostic one.
     @AppStorage("recordOnsetTolerance") private var onsetTolerance: Double = PerformanceEvaluator.onsetTolerance
+    /// How far (in cents) a detected pitch may sit from a note's exact
+    /// expected frequency and still count as that note — user-adjustable
+    /// for the same reason `onsetTolerance` is, but for pitch instead of
+    /// timing: some strings (a wound low string is a common culprit) or
+    /// instruments drift out of tune more than others, and no single
+    /// fixed tolerance suits every setup. Persisted alongside
+    /// `onsetTolerance` as a difficulty/calibration setting, not just a
+    /// diagnostic one.
+    @AppStorage("recordPitchTolerance") private var pitchTolerance: Double = PerformanceEvaluator.pitchTolerance
     /// Notes already scored by the live in-progress pass — `finishRecording`
     /// only needs to catch whatever's left (typically the last note or two
     /// near the end of the take), not redo the whole thing.
     @State private var evaluatedNotes: Set<ScoreNote> = []
+    /// The real wall-clock moment `recorder.start()` was called — paired
+    /// with `engine.startWallClock` (set once playback's own anchor is
+    /// captured) to *measure* `captureLeadTime` instead of assuming it.
+    @State private var recordingStartedAt: Date?
+
     /// How much earlier than `regionStart` the recording buffer actually
     /// begins — the count-in's own duration, when there is one. Recording
     /// starts alongside the count-in rather than after it (see
     /// `startRecording`), so this offset has to be subtracted out when
     /// telling `PerformanceEvaluator` what `samples[0]` corresponds to.
-    @State private var captureLeadTime: TimeInterval = 0
+    ///
+    /// *Measured* against `engine.startWallClock` — the actual wall-clock
+    /// moment playback's own anchor was captured — rather than assumed
+    /// from `beatInterval * 4` (the count-in's nominal duration). Those
+    /// two aren't guaranteed to match: `engine.play()` deliberately
+    /// captures its anchor from *inside* a dispatched closure specifically
+    /// to absorb any real scheduling/cold-start delay between being asked
+    /// to play and audio actually starting (worst right after a cold
+    /// engine start, still loading its instrument) — see that doc comment
+    /// for the full story. That delay was already being correctly kept
+    /// out of the engine's own `currentTime`/playhead; it just wasn't
+    /// being kept out of *this* number, which is exactly what was making
+    /// the very first note or two of a take (right after the count-in, or
+    /// right after a cold start) misalign against the actual recording —
+    /// a fixed theoretical guess doesn't know about a delay that only
+    /// really shows up on, say, the very first take of a session.
+    private var captureLeadTime: TimeInterval {
+        guard let recordingStartedAt, let anchor = engine.startWallClock else {
+            // Anchor not captured yet (a runloop tick hasn't passed since
+            // `play()`) — falls back to the theoretical value for that
+            // brief window rather than reading 0, which would be a worse
+            // guess than the nominal count-in duration.
+            return leadInEnabled ? beatInterval * 4 : 0
+        }
+        let dateAtRegionStart = anchor.addingTimeInterval(regionStart / engine.playbackRate)
+        return dateAtRegionStart.timeIntervalSince(recordingStartedAt)
+    }
 
     private var regionStart: TimeInterval { loopRegion?.lowerBound ?? 0 }
     private var regionEnd: TimeInterval { loopRegion?.upperBound ?? sequence.duration }
-    /// Scaled by the practice-speed slider (`engine.playbackRate`) — the
-    /// metronome previously always clicked at the sequence's nominal
-    /// tempo regardless of that slider, so slowing playback down to
-    /// practice a hard passage left the click racing ahead of the actual
-    /// notes instead of staying with them. Dividing (not multiplying) is
+    /// Uses `sequence.tempo(atTime:)`, not the flat `sequence.tempo` —
+    /// for a piece with more than one `<sound tempo>` marking, the flat
+    /// value is just whichever one parsing saw last, which raced ahead
+    /// of (or lagged) a loop region using a different, earlier tempo even
+    /// though each note's own timing was always resolved correctly. Also
+    /// scaled by the practice-speed slider (`engine.playbackRate`) — the
+    /// metronome previously always clicked at the piece's nominal tempo
+    /// regardless of that slider, so slowing playback down to practice a
+    /// hard passage left the click racing ahead of the actual notes
+    /// instead of staying with them. Dividing (not multiplying) is
     /// correct: half the rate means double the time between beats.
-    private var beatInterval: TimeInterval { 60.0 / max(sequence.tempo, 1) / engine.playbackRate }
-    private var optionsActive: Bool { leadInEnabled || metronomeEnabled }
+    private var beatInterval: TimeInterval { 60.0 / max(sequence.tempo(atTime: regionStart), 1) / engine.playbackRate }
+    /// Drives the settings icon's filled/outline state — true when
+    /// anything in that popover is set away from its plain default, so
+    /// glancing at the icon says whether something's been customized
+    /// without opening it.
+    private var settingsActive: Bool { leadInEnabled || metronomeEnabled || engine.playbackRate != 1.0 }
 
     var body: some View {
         HStack(spacing: 12) {
@@ -65,22 +121,71 @@ struct RecordEvaluateControl: View {
             .controlSize(.large)
             .tint(isRecordingSession ? .red : nil)
 
+            // Only meaningful with a loop region set (see the loop control
+            // above the score, or the song's own transport at the bottom
+            // of the window — both set the same one shared region).
+            Toggle(isOn: $loopForever) {
+                Image(systemName: "repeat")
+                    .font(.system(size: 15))
+            }
+            .toggleStyle(.button)
+            .tint(.accentColor)
+            .disabled(loopRegion == nil)
+            .help(loopRegion == nil
+                ? "Set a loop region above to keep repeating a take"
+                : "Keep taking new passes at the loop region automatically, instead of stopping after one")
+
             // Smaller and more muted than "Play Along…" so it doesn't
             // compete with the primary action — but not so faint it's
-            // hard to notice; the timing-tolerance slider lives in here
-            // too, not just the count-in/metronome toggles.
+            // hard to notice. Everything about how a take runs and is
+            // scored lives in here — speed, count-in/metronome, and
+            // timing/pitch tolerance — one icon and one popover instead
+            // of the previous speedometer-plus-gearshape pair, since none
+            // of these get touched often enough mid-session to earn a
+            // dedicated icon of their own.
             Button {
                 showingOptionsPopover = true
             } label: {
-                Image(systemName: optionsActive ? "gearshape.fill" : "gearshape")
+                Image(systemName: settingsActive ? "gearshape.fill" : "gearshape")
                     .font(.system(size: 15))
             }
             .buttonStyle(.plain)
             .foregroundStyle(.secondary)
             .disabled(isRecordingSession)
-            .help("Count-in, metronome, and timing-tolerance options")
+            .help("Speed, count-in, metronome, and tolerance settings")
             .popover(isPresented: $showingOptionsPopover, arrowEdge: .bottom) {
-                VStack(alignment: .leading, spacing: 10) {
+                VStack(alignment: .leading, spacing: 12) {
+                    settingsSectionHeader("Speed")
+                    HStack(spacing: 8) {
+                        Slider(
+                            value: Binding(
+                                get: { engine.playbackRate },
+                                set: { engine.playbackRate = $0 }
+                            ),
+                            in: 0.25...1.25
+                        )
+                        .frame(width: 140)
+                        Text("\(Int((engine.playbackRate * 100).rounded()))%")
+                            .font(.caption)
+                            .monospacedDigit()
+                            .foregroundStyle(.secondary)
+                            .frame(width: 40, alignment: .leading)
+                    }
+                    // What that percentage actually means for a real
+                    // metronome — the whole point of showing it here
+                    // rather than making you do the math from the
+                    // percentage yourself. Uses the region's own tempo,
+                    // same as `beatInterval`, so it matches the click.
+                    HStack(spacing: 4) {
+                        Text("→")
+                            .foregroundStyle(.secondary)
+                        BPMIndicator(baseTempo: sequence.tempo(atTime: regionStart), playbackRate: engine.playbackRate)
+                    }
+                    .font(.caption)
+
+                    Divider()
+
+                    settingsSectionHeader("Count-In & Metronome")
                     Toggle("4-beat lead-in", isOn: $leadInEnabled)
                         .toggleStyle(.checkbox)
                     Toggle("Metronome", isOn: $metronomeEnabled)
@@ -101,9 +206,10 @@ struct RecordEvaluateControl: View {
 
                     Divider()
 
+                    settingsSectionHeader("Tolerance")
                     VStack(alignment: .leading, spacing: 4) {
-                        Text("Timing Tolerance")
-                            .font(.caption)
+                        Text("Timing")
+                            .font(.caption2)
                             .foregroundStyle(.secondary)
                         HStack(spacing: 8) {
                             Slider(value: $onsetTolerance, in: 0.05...0.4, step: 0.01)
@@ -112,59 +218,35 @@ struct RecordEvaluateControl: View {
                                 .font(.caption)
                                 .monospacedDigit()
                                 .foregroundStyle(.secondary)
-                                .frame(width: 46, alignment: .leading)
+                                .frame(width: 40, alignment: .leading)
                         }
                     }
                     .help("How far off-time a note can land and still count as an attempt at it. Widen it if notes near the very start of a take keep showing miss/wrong.")
-                }
-                .padding(14)
-            }
 
-            // Practice speed (slows playback down without changing pitch)
-            // lives here rather than on the transport above it — it
-            // matters most exactly when you're about to play/sing along.
-            Button {
-                showingSpeedPopover = true
-            } label: {
-                Image(systemName: "speedometer")
-                    .font(.system(size: 15))
-            }
-            .buttonStyle(.plain)
-            .foregroundStyle(engine.playbackRate != 1.0 ? Color.primary : Color.secondary)
-            .disabled(isRecordingSession)
-            .help("Practice speed")
-            .popover(isPresented: $showingSpeedPopover, arrowEdge: .bottom) {
-                VStack(alignment: .leading, spacing: 8) {
-                    HStack(spacing: 8) {
-                        Text("Speed")
-                            .font(.body)
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Pitch")
+                            .font(.caption2)
                             .foregroundStyle(.secondary)
-                        Slider(
-                            value: Binding(
-                                get: { engine.playbackRate },
-                                set: { engine.playbackRate = $0 }
-                            ),
-                            in: 0.25...1.25
-                        )
-                        .frame(width: 140)
-                        Text("\(Int((engine.playbackRate * 100).rounded()))%")
-                            .font(.body)
-                            .monospacedDigit()
-                            .foregroundStyle(.secondary)
-                            .frame(width: 42, alignment: .leading)
+                        HStack(spacing: 8) {
+                            // Capped at 50 (half a semitone) — past that,
+                            // the window starts to overlap a neighboring
+                            // note's own territory rather than just
+                            // accommodating tuning drift.
+                            Slider(value: $pitchTolerance, in: 10...50, step: 1)
+                                .frame(width: 140)
+                            Text("\(Int(pitchTolerance.rounded()))¢")
+                                .font(.caption)
+                                .monospacedDigit()
+                                .foregroundStyle(.secondary)
+                                .frame(width: 40, alignment: .leading)
+                        }
                     }
-                    // What that percentage actually means for a real
-                    // metronome — the whole point of showing it here
-                    // rather than making you do the math from the
-                    // percentage yourself.
-                    HStack(spacing: 4) {
-                        Text("→")
-                            .foregroundStyle(.secondary)
-                        BPMIndicator(baseTempo: sequence.tempo, playbackRate: engine.playbackRate)
-                    }
-                    .font(.body)
+                    .help("How far out of tune a note can land and still count. Widen it if a particular string keeps showing miss/wrong even when played cleanly.")
                 }
-                .padding(14)
+                .padding(.leading, 22)
+                .padding(.trailing, 18)
+                .padding(.vertical, 18)
+                .frame(width: 230)
             }
 
             if isCountingIn {
@@ -204,8 +286,8 @@ struct RecordEvaluateControl: View {
         // an onset that was never captured in the first place. The whole
         // lead-in gets recorded as a result (and just as harmlessly
         // ignored, since no expected note falls in that stretch).
+        recordingStartedAt = Date()
         recorder.start()
-        captureLeadTime = leadInEnabled ? beatInterval * 4 : 0
 
         if leadInEnabled {
             isCountingIn = true
@@ -224,7 +306,18 @@ struct RecordEvaluateControl: View {
             metronome.startSteadyClick(beatInterval: beatInterval)
         }
         liveEvaluationTimer?.invalidate()
-        liveEvaluationTimer = Timer.scheduledTimer(withTimeInterval: 0.3, repeats: true) { _ in
+        // `Timer(timeInterval:repeats:)` + `RunLoop.main.add(_:forMode:
+        // .common)`, not the plain `Timer.scheduledTimer` convenience
+        // initializer — that schedules on the run loop's `.default` mode
+        // only, which stalls during any mouse-tracking interaction
+        // (dragging a slider, resizing the window). Since this timer is
+        // what actually stops "Play Along" at the end of a loop region,
+        // that stall meant the region's stop marker could get missed
+        // entirely — not just late — if you so much as dragged something
+        // while a take was running. Same fix already applied to
+        // `PlayerController`/`NotePlaybackEngine`/`MultiTrackPlaybackEngine`'s
+        // own timers; this one had been missed.
+        let newTimer = Timer(timeInterval: 0.3, repeats: true) { _ in
             Task { @MainActor in
                 // With no loop selected, `regionEnd` is the whole
                 // sequence's own duration and `engine` already stops
@@ -235,12 +328,23 @@ struct RecordEvaluateControl: View {
                 // selected loop instead of playing on through the rest of
                 // the song.
                 if loopRegion != nil, engine.currentTime >= regionEnd {
+                    let shouldLoop = loopForever
                     finishRecording()
+                    // Checked here, not inside `finishRecording` itself —
+                    // that function also runs when "Stop" is pressed by
+                    // hand, which must never auto-restart a take. Only
+                    // this specific "reached the end of a lap on its own"
+                    // path should.
+                    if shouldLoop {
+                        startRecording()
+                    }
                     return
                 }
                 evaluateSettledNotes()
             }
         }
+        RunLoop.main.add(newTimer, forMode: .common)
+        liveEvaluationTimer = newTimer
     }
 
     /// Scores whichever expected notes are far enough behind the playhead
@@ -265,7 +369,8 @@ struct RecordEvaluateControl: View {
             against: NoteSequence(notes: settledNotes),
             isVocal: isVocal,
             regionStart: regionStart - captureLeadTime,
-            onsetTolerance: onsetTolerance
+            onsetTolerance: onsetTolerance,
+            pitchTolerance: pitchTolerance
         )
         evaluatedNotes.formUnion(settledNotes)
         withAnimation(.spring(response: 0.3, dampingFraction: 0.6)) {
@@ -283,25 +388,51 @@ struct RecordEvaluateControl: View {
         engine.pause()
         engine.loopRegion = savedLoopRegion
         guard recorder.isRecording else { return }
+        // `engine.currentTime` right after `pause()` (a few lines up)
+        // still holds wherever playback actually reached — pausing only
+        // stops the timer, it doesn't reset the value. A note past that
+        // point was never actually attempted (this is a "Stop" partway
+        // through, not a full pass through the region), so `samples`
+        // simply doesn't cover it — without this cutoff, every one of
+        // those future notes got evaluated anyway, against whatever real
+        // audio happened to be at the very *end* of the recording (see
+        // `PerformanceEvaluator.forwardFrame`'s clamping), landing on a
+        // hit/miss/wrong verdict that had nothing to do with that note at
+        // all. That's what showed up as unplayed notes lighting up
+        // green/orange/red at random after stopping a take early.
+        let playedUpTo = engine.currentTime
         let samples = recorder.stop()
         let notesInRegion = sequence.notes.filter { $0.startTime >= regionStart && $0.startTime < regionEnd }
         // The live pass above already scored everything it had time to —
         // this just catches whatever's left, typically the last note or
         // two near the end of the take.
-        let remainingNotes = notesInRegion.filter { !evaluatedNotes.contains($0) }
+        let remainingNotes = notesInRegion.filter { !evaluatedNotes.contains($0) && $0.startTime <= playedUpTo }
         let evaluated = PerformanceEvaluator.evaluate(
             samples: samples,
             sampleRate: recorder.sampleRate,
             against: NoteSequence(notes: remainingNotes),
             isVocal: isVocal,
             regionStart: regionStart - captureLeadTime,
-            onsetTolerance: onsetTolerance
+            onsetTolerance: onsetTolerance,
+            pitchTolerance: pitchTolerance
         )
         // Springs the hit/miss markers' colors in on the score view
         // (bound via `result`) instead of a hard instant swap.
         withAnimation(.spring(response: 0.35, dampingFraction: 0.6)) {
             result = PerformanceEvaluator.Result(perNote: (result?.perNote ?? []) + evaluated.perNote)
         }
+    }
+
+    /// Shared heading style for each labeled group in the settings
+    /// popover — small, uppercase, muted, same treatment SwiftUI's own
+    /// grouped `Form` sections use, so Speed/Count-In & Metronome/
+    /// Tolerance read as three distinct clusters rather than one long
+    /// undifferentiated list of controls.
+    @ViewBuilder
+    private func settingsSectionHeader(_ title: String) -> some View {
+        Text(title.uppercased())
+            .font(.system(size: 10, weight: .semibold))
+            .foregroundStyle(.secondary)
     }
 
     private func resultMessage(_ result: PerformanceEvaluator.Result) -> String {
@@ -313,6 +444,6 @@ struct RecordEvaluateControl: View {
         case 0.5..<0.75: band = "Getting there"
         default: band = "Keep at it"
         }
-        return "\(band) — \(result.hitCount)/\(result.perNote.count) (\(percent)%)"
+        return "\(band) — \(result.correctCount)/\(result.perNote.count) (\(percent)%)"
     }
 }

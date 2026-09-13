@@ -29,6 +29,14 @@ struct WindowConfigurator: NSViewRepresentable {
     /// spot once Learn Song mode ends.
     final class Coordinator {
         var removedIndices: [NSToolbarItem.Identifier: Int] = [:]
+        /// Whether `ensureMinimumSizeForLearnSong` has already run for the
+        /// *current* stretch of Learn Song mode — reset back to false once
+        /// `hideSidebarToggle` goes false (leaving Learn Song), so it fires
+        /// again next time. Without this, every SwiftUI update while
+        /// already in Learn Song would re-check the window size, which
+        /// would keep fighting a user who deliberately shrinks the window
+        /// back down below the minimum after entering.
+        var appliedLearnSongMinSize = false
     }
 
     func makeCoordinator() -> Coordinator { Coordinator() }
@@ -47,7 +55,57 @@ struct WindowConfigurator: NSViewRepresentable {
         DispatchQueue.main.async {
             Self.setSplitViewChromeHidden(hide, on: nsView.window, coordinator: coordinator)
             Self.grayOutTitlebarText(in: nsView.window)
+            if hide {
+                if !coordinator.appliedLearnSongMinSize {
+                    Self.ensureMinimumSizeForLearnSong(nsView.window)
+                    coordinator.appliedLearnSongMinSize = true
+                }
+            } else {
+                coordinator.appliedLearnSongMinSize = false
+            }
         }
+    }
+
+    /// `LearnSongView` is swapped in in place of the library browser
+    /// inside this same window (see `ContentView`), not opened as its own
+    /// window — so unlike a fresh `WindowGroup`, nothing ever resizes the
+    /// window to fit its `.frame(minWidth:900, minHeight:560)` on its
+    /// own; the window just stays whatever size it already was for
+    /// browsing the library (autosaved via `setFrameAutosaveName` above,
+    /// so it can easily be a short, wide window that's perfectly fine for
+    /// a track list but far short of Learn Song's real minimum). With no
+    /// scroll container around the whole view, content that doesn't fit
+    /// doesn't get a scrollbar — it's silently clipped by the window's
+    /// own bounds, which is what made the stave switcher and the bottom
+    /// transport bar (the two fixed-size pieces furthest from the top)
+    /// disappear entirely with no error. This grows the window (only —
+    /// never shrinks a window the user already made bigger) to match
+    /// that same minimum content size, keeping its top edge in place so
+    /// it grows downward rather than jumping the titlebar off-screen.
+    private static func ensureMinimumSizeForLearnSong(_ window: NSWindow?) {
+        guard let window else { return }
+        // Matches `LearnSongView`'s own `.frame(minWidth:900, minHeight:
+        // 560)` plus its `.padding` (56 horizontal each side, 20 top, 56
+        // bottom) — plus a little extra for the window's own titlebar,
+        // which isn't part of that content frame at all.
+        let minContentWidth: CGFloat = 900 + 56 * 2
+        let minContentHeight: CGFloat = 560 + 20 + 56 + 28
+        var frame = window.frame
+        let currentContentHeight = window.contentRect(forFrameRect: frame).height
+        let currentContentWidth = window.contentRect(forFrameRect: frame).width
+        guard currentContentWidth < minContentWidth || currentContentHeight < minContentHeight else { return }
+        let newContentWidth = max(currentContentWidth, minContentWidth)
+        let newContentHeight = max(currentContentHeight, minContentHeight)
+        let heightDelta = newContentHeight - currentContentHeight
+        frame.size.width += newContentWidth - currentContentWidth
+        frame.size.height += heightDelta
+        // AppKit's frame origin is its bottom-left corner (y increases
+        // upward) — without this adjustment, growing `size.height` alone
+        // extends the window *downward* from its current bottom edge but
+        // also pushes its *top* edge up past where the titlebar was,
+        // which reads as the window jumping rather than growing in place.
+        frame.origin.y -= heightDelta
+        window.setFrame(frame, display: true, animate: true)
     }
 
     /// The native title text (`library.currentViewTitle`, set via

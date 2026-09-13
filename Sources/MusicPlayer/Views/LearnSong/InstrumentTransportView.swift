@@ -32,6 +32,14 @@ struct InstrumentTransportView: View {
     /// for the two guitar staves — hidden there rather than shown as a
     /// dead-feeling no-op button.
     var showsTuner: Bool = true
+    /// Milliseconds, not seconds — `NotePlaybackEngine.syncOffset`
+    /// is a `TimeInterval`, but a slider in whole milliseconds is a much
+    /// more natural unit to actually drag. Owned by `LearnSongView` (like
+    /// `showingTuner`) and pushed into every engine there, not read
+    /// directly from `engine` here, since one offset should apply
+    /// consistently across every pane rather than needing to be re-tuned
+    /// per staff.
+    @Binding var syncOffsetMs: Double
 
     var body: some View {
         // Grouped into tight clusters (playback / volume) with generous
@@ -115,6 +123,12 @@ struct InstrumentTransportView: View {
                     TunerPopoverView()
                 }
             }
+
+            // A single, transparent sync offset (see
+            // `NotePlaybackEngine.syncOffset`) — drag until the playhead
+            // lines up with what you're actually hearing, once, and it's
+            // remembered from then on.
+            SyncOffsetButton(syncOffsetMs: $syncOffsetMs)
         }
         .padding(.leading, leadingInset)
     }

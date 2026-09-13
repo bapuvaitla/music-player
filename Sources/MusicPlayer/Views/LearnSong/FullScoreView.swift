@@ -32,6 +32,13 @@ struct FullScoreView: View {
     /// parts are as tuning-relevant as the individual Guitar Tab/Notation
     /// panes, so this gets its own tuner button rather than going without.
     @Binding var showingTuner: Bool
+    /// Same shared value as the three practice panes — see
+    /// `InstrumentTransportView.syncOffsetMs`.
+    @Binding var syncOffsetMs: Double
+    /// The one loop region shared with the song's own transport and every
+    /// practice pane (see `LearnSongView.applyLoopRegionToEngines`) — not
+    /// a region of this screen's own.
+    @Binding var loopRegion: ClosedRange<TimeInterval>?
 
     /// Used for click-to-seek/evaluation-coloring correlation in
     /// `NotationScoreView` (it needs *a* `NoteSequence` to map a clicked
@@ -60,7 +67,7 @@ struct FullScoreView: View {
             if musicXMLData != nil, !parts.isEmpty {
                 transport
                 PlaybackLoopControl(
-                    loopRegion: Binding(get: { engine.loopRegion }, set: { engine.loopRegion = $0 }),
+                    loopRegion: $loopRegion,
                     duration: engine.duration,
                     currentTime: engine.currentTime,
                     onSeek: { engine.seek(to: $0) },
@@ -145,6 +152,8 @@ struct FullScoreView: View {
             .popover(isPresented: $showingTuner, arrowEdge: .top) {
                 TunerPopoverView()
             }
+
+            SyncOffsetButton(syncOffsetMs: $syncOffsetMs)
 
             Spacer()
         }
