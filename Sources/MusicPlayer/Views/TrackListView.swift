@@ -661,8 +661,7 @@ struct TrackListView: View, Equatable {
                         get: { track.rating },
                         set: { library.setRating($0, for: track) }
                     ),
-                    isSelected: selection.count == 1 && selection.contains(track.id),
-                    showSlider: selection.count == 1 && dragArmedIDs.contains(track.id)
+                    isSelected: selection.count == 1 && selection.contains(track.id)
                 )
                 .padding(.horizontal, 10)
             }
@@ -762,8 +761,7 @@ struct TrackListView: View, Equatable {
                         get: { track.rating },
                         set: { library.setRating($0, for: track) }
                     ),
-                    isSelected: selection.count == 1 && selection.contains(track.id),
-                    showSlider: selection.count == 1 && dragArmedIDs.contains(track.id)
+                    isSelected: selection.count == 1 && selection.contains(track.id)
                 )
                 .padding(.horizontal, 10)
             }
@@ -863,8 +861,7 @@ struct TrackListView: View, Equatable {
                         get: { track.rating },
                         set: { library.setRating($0, for: track) }
                     ),
-                    isSelected: selection.count == 1 && selection.contains(track.id),
-                    showSlider: selection.count == 1 && dragArmedIDs.contains(track.id)
+                    isSelected: selection.count == 1 && selection.contains(track.id)
                 )
                 .padding(.horizontal, 10)
             }
@@ -964,8 +961,7 @@ struct TrackListView: View, Equatable {
                         get: { track.rating },
                         set: { library.setRating($0, for: track) }
                     ),
-                    isSelected: selection.count == 1 && selection.contains(track.id),
-                    showSlider: selection.count == 1 && dragArmedIDs.contains(track.id)
+                    isSelected: selection.count == 1 && selection.contains(track.id)
                 )
                 .padding(.horizontal, 10)
             }
@@ -1065,8 +1061,7 @@ struct TrackListView: View, Equatable {
                         get: { track.rating },
                         set: { library.setRating($0, for: track) }
                     ),
-                    isSelected: selection.count == 1 && selection.contains(track.id),
-                    showSlider: selection.count == 1 && dragArmedIDs.contains(track.id)
+                    isSelected: selection.count == 1 && selection.contains(track.id)
                 )
                 .padding(.horizontal, 10)
             }
@@ -1166,8 +1161,7 @@ struct TrackListView: View, Equatable {
                         get: { track.rating },
                         set: { library.setRating($0, for: track) }
                     ),
-                    isSelected: selection.count == 1 && selection.contains(track.id),
-                    showSlider: selection.count == 1 && dragArmedIDs.contains(track.id)
+                    isSelected: selection.count == 1 && selection.contains(track.id)
                 )
                 .padding(.horizontal, 10)
             }
@@ -1267,8 +1261,7 @@ struct TrackListView: View, Equatable {
                         get: { track.rating },
                         set: { library.setRating($0, for: track) }
                     ),
-                    isSelected: selection.count == 1 && selection.contains(track.id),
-                    showSlider: selection.count == 1 && dragArmedIDs.contains(track.id)
+                    isSelected: selection.count == 1 && selection.contains(track.id)
                 )
                 .padding(.horizontal, 10)
             }
@@ -1368,8 +1361,7 @@ struct TrackListView: View, Equatable {
                         get: { track.rating },
                         set: { library.setRating($0, for: track) }
                     ),
-                    isSelected: selection.count == 1 && selection.contains(track.id),
-                    showSlider: selection.count == 1 && dragArmedIDs.contains(track.id)
+                    isSelected: selection.count == 1 && selection.contains(track.id)
                 )
                 .padding(.horizontal, 10)
             }
@@ -1469,8 +1461,7 @@ struct TrackListView: View, Equatable {
                         get: { track.rating },
                         set: { library.setRating($0, for: track) }
                     ),
-                    isSelected: selection.count == 1 && selection.contains(track.id),
-                    showSlider: selection.count == 1 && dragArmedIDs.contains(track.id)
+                    isSelected: selection.count == 1 && selection.contains(track.id)
                 )
                 .padding(.horizontal, 10)
             }
@@ -1570,8 +1561,7 @@ struct TrackListView: View, Equatable {
                         get: { track.rating },
                         set: { library.setRating($0, for: track) }
                     ),
-                    isSelected: selection.count == 1 && selection.contains(track.id),
-                    showSlider: selection.count == 1 && dragArmedIDs.contains(track.id)
+                    isSelected: selection.count == 1 && selection.contains(track.id)
                 )
                 .padding(.horizontal, 10)
             }
@@ -1671,8 +1661,7 @@ struct TrackListView: View, Equatable {
                         get: { track.rating },
                         set: { library.setRating($0, for: track) }
                     ),
-                    isSelected: selection.count == 1 && selection.contains(track.id),
-                    showSlider: selection.count == 1 && dragArmedIDs.contains(track.id)
+                    isSelected: selection.count == 1 && selection.contains(track.id)
                 )
                 .padding(.horizontal, 10)
             }
@@ -1772,8 +1761,7 @@ struct TrackListView: View, Equatable {
                         get: { track.rating },
                         set: { library.setRating($0, for: track) }
                     ),
-                    isSelected: selection.count == 1 && selection.contains(track.id),
-                    showSlider: selection.count == 1 && dragArmedIDs.contains(track.id)
+                    isSelected: selection.count == 1 && selection.contains(track.id)
                 )
                 .padding(.horizontal, 10)
             }
@@ -1873,8 +1861,7 @@ struct TrackListView: View, Equatable {
                         get: { track.rating },
                         set: { library.setRating($0, for: track) }
                     ),
-                    isSelected: selection.count == 1 && selection.contains(track.id),
-                    showSlider: selection.count == 1 && dragArmedIDs.contains(track.id)
+                    isSelected: selection.count == 1 && selection.contains(track.id)
                 )
                 .padding(.horizontal, 10)
             }
@@ -1974,8 +1961,7 @@ struct TrackListView: View, Equatable {
                         get: { track.rating },
                         set: { library.setRating($0, for: track) }
                     ),
-                    isSelected: selection.count == 1 && selection.contains(track.id),
-                    showSlider: selection.count == 1 && dragArmedIDs.contains(track.id)
+                    isSelected: selection.count == 1 && selection.contains(track.id)
                 )
                 .padding(.horizontal, 10)
             }
