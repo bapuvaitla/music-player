@@ -2,10 +2,12 @@ import SwiftUI
 import MusicPlayerKit
 
 /// The song's own transport in Learn Song mode, with one addition: a loop
-/// region. Drag the two handles on the scrub bar, toggle looping on, and
-/// the song repeats just that section while you practice. Reuses the
-/// same `PlayerController`/`PlaybackCoordinator` as the rest of the app —
-/// the song doesn't need to stay in sync with the tab/vocal playback, so
+/// region. Drag the two handles on the scrub bar to select a section —
+/// that's always available, whether or not looping is on. Toggle looping
+/// to repeat it, or leave it off to just play through that section once;
+/// the "x" button clears back to the full song. Reuses the same
+/// `PlayerController`/`PlaybackCoordinator` as the rest of the app — the
+/// song doesn't need to stay in sync with the tab/vocal playback, so
 /// there's no separate player instance here.
 ///
 /// Artwork/title/artist already live in `LearnSongView`'s header, so this
@@ -102,14 +104,27 @@ struct LargeNowPlayingBarView: View {
                 Spacer()
 
                 // "Select a section [of the song] to loop" — sized up to
-                // match the rest of this bar's new prominence.
+                // match the rest of this bar's new prominence. Drag either
+                // handle below to select/adjust a region regardless of
+                // whether this is on; it just controls whether it repeats.
                 Toggle(isOn: $loopEnabled) {
                     Image(systemName: "repeat")
                         .font(.system(size: 15))
                 }
                 .toggleStyle(.button)
                 .tint(.accentColor)
-                .help("Loop a section of the song")
+                .help("Loop the selected region")
+
+                Button {
+                    reset()
+                } label: {
+                    Image(systemName: "xmark.circle")
+                        .font(.system(size: 14))
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(.secondary)
+                .disabled(selectedRegion == nil)
+                .help("Reset to the full song")
             }
 
             HStack(spacing: 6) {
@@ -172,6 +187,24 @@ struct LargeNowPlayingBarView: View {
         if isThisTrackCurrent {
             player.loopRegion = region
             player.loopsRegion = loopEnabled
+        }
+    }
+
+    /// Clears the shared region/toggle back to "no region, whole song" —
+    /// and resets the local handle positions back to a default span, so
+    /// the next drag starts fresh instead of resuming from wherever they
+    /// last were.
+    private func reset() {
+        loopEnabled = false
+        loopStart = 0
+        loopEnd = min(player.duration, 10)
+        lastWrittenRegion = nil
+        selectedRegion = nil
+        lastWrittenIsLoopEnabled = false
+        isLoopEnabled = false
+        if isThisTrackCurrent {
+            player.loopRegion = nil
+            player.loopsRegion = false
         }
     }
 

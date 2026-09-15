@@ -84,7 +84,22 @@ struct PlaybackLoopControl: View {
             }
             .toggleStyle(.button)
             .tint(.accentColor)
-            .help("Loop a section of this")
+            .help("Loop the selected region")
+
+            // Drag either handle on the bar below to select/adjust a
+            // region — that's always available, regardless of whether
+            // looping is on. This just clears back to "no region, whole
+            // song" once you're done with one.
+            Button {
+                reset()
+            } label: {
+                Image(systemName: "xmark.circle")
+                    .font(.system(size: 14))
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(.secondary)
+            .disabled(selectedRegion == nil)
+            .help("Reset to the full song")
 
             LoopScrubBar(
                 loopEnabled: loopEnabled,
@@ -130,5 +145,19 @@ struct PlaybackLoopControl: View {
         selectedRegion = region
         lastWrittenIsLoopEnabled = loopEnabled
         isLoopEnabled = loopEnabled
+    }
+
+    /// Clears the shared region/toggle back to "no region, whole song" —
+    /// and resets the local handle positions back to the default span, so
+    /// the next drag starts fresh instead of resuming from wherever they
+    /// last were.
+    private func reset() {
+        loopEnabled = false
+        loopStart = 0
+        loopEnd = Self.defaultLoopEnd(duration: duration, barTimes: barTimes)
+        lastWrittenRegion = nil
+        selectedRegion = nil
+        lastWrittenIsLoopEnabled = false
+        isLoopEnabled = false
     }
 }

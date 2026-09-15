@@ -1,11 +1,13 @@
 import SwiftUI
 
-/// A scrub bar with two draggable handles marking a loop region, drawn as
-/// a highlighted band between them. Used by the song's transport
-/// (`LargeNowPlayingBarView`) and each practice pane/full score
-/// (`PlaybackLoopControl`) alike — all of them read and write the same
-/// one shared loop region (see `LearnSongView.applyLoopRegionToEngines`),
-/// not a region of their own.
+/// A scrub bar with two draggable handles marking a region, drawn as a
+/// highlighted band between them — always visible and draggable, whether
+/// or not `loopEnabled` is on (that only recolors the band/handles, as a
+/// hint for whether the region will repeat or just play through once).
+/// Used by the song's transport (`LargeNowPlayingBarView`) and each
+/// practice pane/full score (`PlaybackLoopControl`) alike — all of them
+/// read and write the same one shared region (see
+/// `LearnSongView.applyLoopRegionToEngines`), not a region of their own.
 ///
 /// `barTimes`/`snapPoints` (below) are proportioned against *this specific
 /// call's* `duration` — `LargeNowPlayingBarView` deliberately leaves them
@@ -63,27 +65,31 @@ struct LoopScrubBar: View {
                     }
                 }
 
-                if loopEnabled {
-                    let startX = width * CGFloat(loopStart / safeDuration)
-                    let endX = width * CGFloat(loopEnd / safeDuration)
-                    Capsule()
-                        .fill(Color.accentColor.opacity(0.35))
-                        .frame(width: max(2, endX - startX), height: 6)
-                        .offset(x: startX)
-                }
+                // The band and handles are always shown, regardless of
+                // `loopEnabled` — this is the only way to actually drag a
+                // region in the first place, so gating it behind the loop
+                // toggle (as this used to do) meant there was no way to
+                // select a region at all without first turning looping
+                // on. `loopEnabled` only changes the color, as a hint for
+                // whether it'll repeat (accent) or just play through once
+                // (secondary/gray).
+                let startX = width * CGFloat(loopStart / safeDuration)
+                let endX = width * CGFloat(loopEnd / safeDuration)
+                Capsule()
+                    .fill((loopEnabled ? Color.accentColor : Color.secondary).opacity(0.35))
+                    .frame(width: max(2, endX - startX), height: 6)
+                    .offset(x: startX)
 
                 Circle()
                     .fill(Color.accentColor)
                     .frame(width: 13, height: 13)
                     .offset(x: width * CGFloat(min(1, max(0, currentTime / safeDuration))) - 6.5)
 
-                if loopEnabled {
-                    handle(time: loopStart, width: width, duration: safeDuration) { newTime in
-                        loopStart = min(newTime, loopEnd - 0.5)
-                    }
-                    handle(time: loopEnd, width: width, duration: safeDuration) { newTime in
-                        loopEnd = max(newTime, loopStart + 0.5)
-                    }
+                handle(time: loopStart, width: width, duration: safeDuration, isLoopEnabled: loopEnabled) { newTime in
+                    loopStart = min(newTime, loopEnd - 0.5)
+                }
+                handle(time: loopEnd, width: width, duration: safeDuration, isLoopEnabled: loopEnabled) { newTime in
+                    loopEnd = max(newTime, loopStart + 0.5)
                 }
             }
             .coordinateSpace(name: "loopBar")
@@ -112,11 +118,12 @@ struct LoopScrubBar: View {
         time: TimeInterval,
         width: CGFloat,
         duration: TimeInterval,
+        isLoopEnabled: Bool,
         onChange: @escaping (TimeInterval) -> Void
     ) -> some View {
         let x = width * CGFloat(time / duration)
         return RoundedRectangle(cornerRadius: 3, style: .continuous)
-            .fill(Color.accentColor)
+            .fill(isLoopEnabled ? Color.accentColor : Color.secondary)
             .frame(width: 9, height: 22)
             .offset(x: x - 4.5)
             .gesture(
