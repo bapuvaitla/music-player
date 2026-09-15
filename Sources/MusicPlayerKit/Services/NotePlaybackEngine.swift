@@ -70,6 +70,21 @@ public final class NotePlaybackEngine: ObservableObject {
         }
     }
 
+    /// Semitones to shift every scheduled note by — for singing/playing
+    /// along in a different key while reading the same tab/notation
+    /// (which stays exactly as written; this only changes what's heard,
+    /// the same idea as a capo). Not reset by `load(_:)`, same as
+    /// `playbackRate` — a transposition choice is about your own voice or
+    /// instrument, not the specific song loaded.
+    @Published public var transposition: Int = 0 {
+        didSet {
+            guard transposition != oldValue, isPlaying else { return }
+            let position = currentTime
+            cancelScheduledAndSilence()
+            schedule(from: position)
+        }
+    }
+
     private let engine = AVAudioEngine()
     private let sampler = AVAudioUnitSampler()
     // `nonisolated(unsafe)`, not actor-isolated like the rest of this
@@ -245,7 +260,7 @@ public final class NotePlaybackEngine: ObservableObject {
 
     private func schedule(from offset: TimeInterval) {
         for note in sequence.notes where note.startTime + note.duration > offset {
-            let midiNote = UInt8(clamping: note.midiPitch)
+            let midiNote = UInt8(clamping: note.midiPitch + transposition)
             // A hammer-on/pull-off/slide is quieter than a freshly picked
             // note — softer velocity is a simple, safe way to make that
             // audible without attempting true legato/pitch-bend synthesis.
@@ -293,7 +308,15 @@ public final class NotePlaybackEngine: ObservableObject {
                 // wall-clock estimate alone always reads slightly ahead of
                 // what you're actually hearing. `syncOffset` is that gap,
                 // as measured by ear on this setup — see its doc comment.
-                self.currentTime = max(0, idealTime - self.syncOffset)
+                // It's a fixed *real-world* latency, but `idealTime` above
+                // is already in piece-time units (scaled by
+                // `playbackRate`) — subtracting it unscaled meant the
+                // correction was only right at 1.0x speed and silently
+                // over/under-corrected at any other speed (half speed
+                // doubled its effective real-world compensation), which is
+                // exactly why it used to need re-tuning every time
+                // practice speed changed.
+                self.currentTime = max(0, idealTime - self.syncOffset * self.playbackRate)
                 if let loopRegion = self.loopRegion, self.currentTime >= loopRegion.upperBound {
                     self.seek(to: loopRegion.lowerBound)
                     return

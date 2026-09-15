@@ -271,8 +271,12 @@ public final class MultiTrackPlaybackEngine: ObservableObject {
                 guard let self, let start = self.startWallClock else { return }
                 let idealTime = Date().timeIntervalSince(start) * self.playbackRate
                 // See `NotePlaybackEngine.syncOffset`'s doc comment for
-                // the full story on why this is one plain user-set value.
-                self.currentTime = max(0, idealTime - self.syncOffset)
+                // the full story on why this is one plain user-set value,
+                // and its "scale with playbackRate" fix for why it's
+                // multiplied here — a fixed real-world latency needs
+                // converting into piece-time units at the current speed,
+                // not subtracted unscaled.
+                self.currentTime = max(0, idealTime - self.syncOffset * self.playbackRate)
                 if let loopRegion = self.loopRegion, self.currentTime >= loopRegion.upperBound {
                     self.seek(to: loopRegion.lowerBound)
                     return

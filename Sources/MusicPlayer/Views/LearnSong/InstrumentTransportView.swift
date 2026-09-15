@@ -6,14 +6,15 @@ import MusicPlayerKit
 /// entirely independent of the song's own playback. Sits above the score
 /// now (the primary controls for practicing), so sized up accordingly.
 /// Play/pause, rewind to start, back/forward one bar (from the sequence's
-/// own measure boundaries), volume, and a BPM readout live here; practice
-/// speed (which slows playback down without changing pitch) lives in the
-/// "Play Along"/"Sing Along" row instead (`RecordEvaluateControl`) — it
-/// matters most exactly when you're about to play or sing along with the
-/// take. The BPM readout tracks whatever speed is currently in effect
-/// there (see `BPMIndicator`), so it's visible on every staff without
-/// needing to open the speed popover — useful for setting a real
-/// metronome while practicing away from the computer.
+/// own measure boundaries), volume, and a BPM readout live here. Tapping
+/// the BPM readout opens the practice-speed control (see `BPMIndicator`
+/// and the `showingSpeedPopover` popover below) — it used to live in the
+/// "Play Along"/"Sing Along" row instead, but the BPM number is the
+/// actual target you're changing when you drag that slider, so it's the
+/// more natural thing to tap. The readout stays visible (and live-updates
+/// through any tempo change) on every staff without needing to open
+/// anything — useful for setting a real metronome while practicing away
+/// from the computer.
 struct InstrumentTransportView: View {
     @ObservedObject var engine: NotePlaybackEngine
     let sequence: NoteSequence
@@ -40,6 +41,9 @@ struct InstrumentTransportView: View {
     /// consistently across every pane rather than needing to be re-tuned
     /// per staff.
     @Binding var syncOffsetMs: Double
+
+    @State private var showingSpeedPopover = false
+    @State private var showingTransposePopover = false
 
     var body: some View {
         // Grouped into tight clusters (playback / volume) with generous
@@ -107,7 +111,79 @@ struct InstrumentTransportView: View {
                     .foregroundStyle(.secondary)
             }
 
-            BPMIndicator(baseTempo: sequence.tempo, playbackRate: engine.playbackRate)
+            Button {
+                showingSpeedPopover = true
+            } label: {
+                BPMIndicator(baseTempo: sequence.tempo(atTime: engine.currentTime), playbackRate: engine.playbackRate)
+            }
+            .buttonStyle(.plain)
+            .popover(isPresented: $showingSpeedPopover, arrowEdge: .bottom) {
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack(spacing: 8) {
+                        Text("Speed")
+                            .font(.body)
+                            .foregroundStyle(.secondary)
+                        Slider(
+                            value: Binding(
+                                get: { engine.playbackRate },
+                                set: { engine.playbackRate = $0 }
+                            ),
+                            in: 0.25...1.25
+                        )
+                        .frame(width: 140)
+                        Text("\(Int((engine.playbackRate * 100).rounded()))%")
+                            .font(.body)
+                            .monospacedDigit()
+                            .foregroundStyle(.secondary)
+                            .frame(width: 42, alignment: .leading)
+                    }
+                    // What that percentage actually means for a real
+                    // metronome — the whole point of showing it here
+                    // rather than making you do the math from the
+                    // percentage yourself.
+                    HStack(spacing: 4) {
+                        Text("→")
+                            .foregroundStyle(.secondary)
+                        BPMIndicator(baseTempo: sequence.tempo(atTime: engine.currentTime), playbackRate: engine.playbackRate)
+                    }
+                    .font(.body)
+                }
+                .padding(14)
+            }
+
+            // A capo, effectively — the tab/notation stays exactly as
+            // written, this only shifts what's *heard*, so you can sing
+            // or play along in a different key. Re-deriving tab fret
+            // positions or re-engraved notation for a transposed key
+            // isn't something this can do well automatically (which
+            // string a shifted note falls on isn't recoverable from pitch
+            // alone), so this is playback-only by design.
+            Button {
+                showingTransposePopover = true
+            } label: {
+                Text("♯")
+                    .font(.system(size: 15, weight: .semibold))
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(engine.transposition != 0 ? Color.primary : Color.secondary)
+            .help(engine.transposition == 0 ? "Transpose (playback only)" : "Transposed \(engine.transposition > 0 ? "+" : "")\(engine.transposition) semitones (playback only)")
+            .popover(isPresented: $showingTransposePopover, arrowEdge: .bottom) {
+                HStack(spacing: 10) {
+                    Stepper(
+                        value: Binding(
+                            get: { engine.transposition },
+                            set: { engine.transposition = $0 }
+                        ),
+                        in: -12...12
+                    ) {
+                        Text(engine.transposition == 0 ? "No transposition" : "\(engine.transposition > 0 ? "+" : "")\(engine.transposition) semitones")
+                            .font(.body)
+                            .monospacedDigit()
+                            .frame(width: 150, alignment: .leading)
+                    }
+                }
+                .padding(14)
+            }
 
             if showsTuner {
                 Button {

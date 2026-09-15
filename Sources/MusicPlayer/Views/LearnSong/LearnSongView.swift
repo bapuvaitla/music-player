@@ -36,7 +36,20 @@ struct LearnSongView: View {
     @State private var vocalRawData: Data?
     @State private var notationRawData: Data?
     @State private var fullScoreRawData: Data?
-    @State private var loopRegion: ClosedRange<TimeInterval>?
+    /// A region can be selected independent of whether it loops — see
+    /// `isLoopEnabled`. Shared by every practice pane, the song's own
+    /// transport, and Play Along/Sing Along alike (see
+    /// `applyLoopRegionToEngines`).
+    @State private var selectedRegion: ClosedRange<TimeInterval>?
+    /// The one shared loop toggle. When on, both normal playback (every
+    /// engine auto-loops `selectedRegion`, see `applyLoopRegionToEngines`)
+    /// and Play Along/Sing Along (each take auto-restarts at the region's
+    /// start, see `RecordEvaluateControl`) repeat it; when off, both still
+    /// use `selectedRegion` to scope playback/scoring, they just don't
+    /// repeat. Previously two separate toggles meant different things —
+    /// one looped normal playback, the other only auto-repeated takes —
+    /// which is exactly the confusion this unifies away.
+    @State private var isLoopEnabled = false
     @State private var tabEvaluation: PerformanceEvaluator.Result?
     @State private var vocalEvaluation: PerformanceEvaluator.Result?
     @State private var notationEvaluation: PerformanceEvaluator.Result?
@@ -77,7 +90,7 @@ struct LearnSongView: View {
             Group {
                 switch practiceSelection {
                 case .fullScore:
-                    FullScoreView(musicXMLData: fullScoreRawData, parts: fullScoreParts, engine: fullScoreEngine, onImportFile: { presentImporter(kind: .fullScore) }, showingTuner: $showingTuner, syncOffsetMs: $syncOffsetMs, loopRegion: $loopRegion)
+                    FullScoreView(musicXMLData: fullScoreRawData, parts: fullScoreParts, engine: fullScoreEngine, onImportFile: { presentImporter(kind: .fullScore) }, showingTuner: $showingTuner, syncOffsetMs: $syncOffsetMs, selectedRegion: $selectedRegion, isLoopEnabled: $isLoopEnabled)
                 case .tab:
                     pane(title: "Guitar Tab", sequence: tabSequence, filePath: tabFilePath, engine: tabEngine, recorder: tabRecorder, isVocal: false, evaluation: $tabEvaluation, showingTuner: $showingTuner) {
                         presentImporter(kind: .tab)
@@ -100,7 +113,7 @@ struct LearnSongView: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
 
-            LargeNowPlayingBarView(track: track, loopRegion: $loopRegion)
+            LargeNowPlayingBarView(track: track, selectedRegion: $selectedRegion, isLoopEnabled: $isLoopEnabled)
         }
         .padding(.top, 20)
         .padding(.bottom, 56)
@@ -120,7 +133,11 @@ struct LearnSongView: View {
             applyLoopRegionToEngines()
         }
         .onChange(of: syncOffsetMs) { _, _ in applySyncOffsetToEngines() }
-        .onChange(of: loopRegion) { _, _ in
+        .onChange(of: selectedRegion) { _, _ in
+            saveSession()
+            applyLoopRegionToEngines()
+        }
+        .onChange(of: isLoopEnabled) { _, _ in
             saveSession()
             applyLoopRegionToEngines()
         }
@@ -217,22 +234,28 @@ struct LearnSongView: View {
     }
 
     /// Pushes the one loop region set on the song's own transport
-    /// (`LargeNowPlayingBarView`, bound to `loopRegion` here) into every
-    /// practice engine too, so it's a single region shared across the
-    /// song, every stave's reference playback, and "Play Along"/"Sing
-    /// Along" — not a separate one re-drawn per pane. `RecordEvaluateControl`
-    /// still momentarily clears its own engine's copy while actively
-    /// recording (see its `startRecording`/`finishRecording`) so its own
-    /// timer — not the engine's built-in auto-loop — is what decides when
-    /// a take ends; this is what that copy resets back to once a take
-    /// finishes. A freshly-constructed engine otherwise starts at its own
-    /// default of nil regardless of what's already set here, so this also
-    /// has to run once at launch, same as `applySyncOffsetToEngines`.
+    /// (`LargeNowPlayingBarView`, bound to `selectedRegion`/`isLoopEnabled`
+    /// here) into every practice engine too, so it's a single region
+    /// shared across the song, every stave's reference playback, and
+    /// "Play Along"/"Sing Along" — not a separate one re-drawn per pane.
+    /// Only actually applied to an engine's own `loopRegion` when
+    /// `isLoopEnabled` is on — `selectedRegion` by itself just means "a
+    /// region is selected," not "loop it," so an engine should only
+    /// auto-loop when the shared toggle says so.
+    /// `RecordEvaluateControl` still momentarily clears its own engine's
+    /// copy while actively recording (see its `startRecording`/
+    /// `finishRecording`) so its own timer — not the engine's built-in
+    /// auto-loop — is what decides when a take ends; this is what that
+    /// copy resets back to once a take finishes. A freshly-constructed
+    /// engine otherwise starts at its own default of nil regardless of
+    /// what's already set here, so this also has to run once at launch,
+    /// same as `applySyncOffsetToEngines`.
     private func applyLoopRegionToEngines() {
-        tabEngine.loopRegion = loopRegion
-        vocalEngine.loopRegion = loopRegion
-        notationEngine.loopRegion = loopRegion
-        fullScoreEngine.loopRegion = loopRegion
+        let activeLoop = isLoopEnabled ? selectedRegion : nil
+        tabEngine.loopRegion = activeLoop
+        vocalEngine.loopRegion = activeLoop
+        notationEngine.loopRegion = activeLoop
+        fullScoreEngine.loopRegion = activeLoop
     }
 
     private func prewarmCurrentRecorder() {
@@ -290,14 +313,15 @@ struct LearnSongView: View {
                 // it's a wider, multi-cluster row in its own right.
                 InstrumentTransportView(engine: engine, sequence: sequence, leadingInset: isVocal ? 0 : 22, showingTuner: showingTuner, showsTuner: !isVocal, syncOffsetMs: $syncOffsetMs)
                     .padding(.vertical, 4)
-                // Bound to the one shared `$loopRegion` (also settable
-                // from the song's own transport below), not a per-pane
-                // region of its own — kept here too, not just down there,
-                // because this is the convenient place to actually see
-                // and drag it against this stave's own bars while
-                // practicing, without scrolling away from the score.
+                // Bound to the one shared `$selectedRegion`/`$isLoopEnabled`
+                // (also settable from the song's own transport below), not
+                // a per-pane region of its own — kept here too, not just
+                // down there, because this is the convenient place to
+                // actually see and drag it against this stave's own bars
+                // while practicing, without scrolling away from the score.
                 PlaybackLoopControl(
-                    loopRegion: $loopRegion,
+                    selectedRegion: $selectedRegion,
+                    isLoopEnabled: $isLoopEnabled,
                     duration: sequence.duration,
                     currentTime: engine.currentTime,
                     onSeek: { engine.seek(to: $0) },
@@ -312,7 +336,8 @@ struct LearnSongView: View {
                     engine: engine,
                     recorder: recorder,
                     sequence: sequence,
-                    loopRegion: loopRegion,
+                    selectedRegion: selectedRegion,
+                    isLoopEnabled: isLoopEnabled,
                     isVocal: isVocal,
                     result: evaluation
                 )
@@ -334,8 +359,9 @@ struct LearnSongView: View {
         Task {
             guard let saved = await library.loadLearnSession(for: track) else { return }
             if let start = saved.loopStart, let end = saved.loopEnd, end > start {
-                loopRegion = start...end
+                selectedRegion = start...end
             }
+            isLoopEnabled = saved.isLoopEnabled
             if let tabPath = saved.tabFilePath {
                 importFile(at: URL(fileURLWithPath: tabPath), kind: .tab, persist: false)
             }
@@ -462,8 +488,9 @@ struct LearnSongView: View {
             notationFilePath: notationFilePath,
             fullScoreFilePath: fullScoreFilePath,
             practiceTarget: practiceSelection.persistedValue,
-            loopStart: loopRegion?.lowerBound,
-            loopEnd: loopRegion?.upperBound
+            loopStart: selectedRegion?.lowerBound,
+            loopEnd: selectedRegion?.upperBound,
+            isLoopEnabled: isLoopEnabled
         )
         library.saveLearnSession(data, for: track)
     }

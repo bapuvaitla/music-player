@@ -15,21 +15,27 @@ struct RecordEvaluateControl: View {
     @ObservedObject var engine: NotePlaybackEngine
     @ObservedObject var recorder: AudioRecorder
     let sequence: NoteSequence
-    let loopRegion: ClosedRange<TimeInterval>?
+    /// A region can be selected independent of whether it loops — see
+    /// `isLoopEnabled`. Always used to scope a take's start/end when set,
+    /// regardless of looping.
+    let selectedRegion: ClosedRange<TimeInterval>?
+    /// The one shared loop toggle (see the loop control above the score,
+    /// or the song's own transport at the bottom of the window — both set
+    /// this and `selectedRegion` together). When on, reaching the end of
+    /// `selectedRegion` during a take doesn't stop it — a fresh take
+    /// starts right back up at `regionStart` automatically, over and
+    /// over, until "Stop" is pressed. Each lap is a genuinely new,
+    /// independently-scored take (see the `liveEvaluationTimer` closure
+    /// below), not one long recording spanning every lap — simpler, and
+    /// it keeps a very long drill session from growing one unbounded
+    /// in-memory buffer.
+    let isLoopEnabled: Bool
     let isVocal: Bool
     @Binding var result: PerformanceEvaluator.Result?
 
     @StateObject private var metronome = MetronomeEngine()
     @State private var leadInEnabled = true
     @State private var metronomeEnabled = true
-    /// When on, and a loop region is set, reaching the end of the region
-    /// during a take doesn't stop it — a fresh take starts right back up
-    /// at `regionStart` automatically, over and over, until "Stop" is
-    /// pressed. Each lap is a genuinely new, independently-scored take
-    /// (see the `liveEvaluationTimer` closure below), not one long
-    /// recording spanning every lap — simpler, and it keeps a very long
-    /// drill session from growing one unbounded in-memory buffer.
-    @State private var loopForever = false
     @State private var isRecordingSession = false
     @State private var isCountingIn = false
     @State private var savedLoopRegion: ClosedRange<TimeInterval>?
@@ -93,8 +99,8 @@ struct RecordEvaluateControl: View {
         return dateAtRegionStart.timeIntervalSince(recordingStartedAt)
     }
 
-    private var regionStart: TimeInterval { loopRegion?.lowerBound ?? 0 }
-    private var regionEnd: TimeInterval { loopRegion?.upperBound ?? sequence.duration }
+    private var regionStart: TimeInterval { selectedRegion?.lowerBound ?? 0 }
+    private var regionEnd: TimeInterval { selectedRegion?.upperBound ?? sequence.duration }
     /// Uses `sequence.tempo(atTime:)`, not the flat `sequence.tempo` —
     /// for a piece with more than one `<sound tempo>` marking, the flat
     /// value is just whichever one parsing saw last, which raced ahead
@@ -111,7 +117,7 @@ struct RecordEvaluateControl: View {
     /// anything in that popover is set away from its plain default, so
     /// glancing at the icon says whether something's been customized
     /// without opening it.
-    private var settingsActive: Bool { leadInEnabled || metronomeEnabled || engine.playbackRate != 1.0 }
+    private var settingsActive: Bool { leadInEnabled || metronomeEnabled }
 
     var body: some View {
         HStack(spacing: 12) {
@@ -121,28 +127,22 @@ struct RecordEvaluateControl: View {
             .controlSize(.large)
             .tint(isRecordingSession ? .red : nil)
 
-            // Only meaningful with a loop region set (see the loop control
-            // above the score, or the song's own transport at the bottom
-            // of the window — both set the same one shared region).
-            Toggle(isOn: $loopForever) {
-                Image(systemName: "repeat")
-                    .font(.system(size: 15))
-            }
-            .toggleStyle(.button)
-            .tint(.accentColor)
-            .disabled(loopRegion == nil)
-            .help(loopRegion == nil
-                ? "Set a loop region above to keep repeating a take"
-                : "Keep taking new passes at the loop region automatically, instead of stopping after one")
+            // The loop toggle itself lives above the score now (see the
+            // loop control there, or the song's own transport at the
+            // bottom of the window — both set the same one shared
+            // `isLoopEnabled`/`selectedRegion` pair) — no separate toggle
+            // here anymore, since "loop this region" meant two different
+            // things depending which one you touched (this one only
+            // repeated takes; the other only looped normal playback).
 
             // Smaller and more muted than "Play Along…" so it doesn't
             // compete with the primary action — but not so faint it's
             // hard to notice. Everything about how a take runs and is
-            // scored lives in here — speed, count-in/metronome, and
-            // timing/pitch tolerance — one icon and one popover instead
-            // of the previous speedometer-plus-gearshape pair, since none
-            // of these get touched often enough mid-session to earn a
-            // dedicated icon of their own.
+            // scored lives in here — count-in/metronome and timing/pitch
+            // tolerance — one icon and one popover, since none of these
+            // get touched often enough mid-session to earn a dedicated
+            // icon of their own. Practice speed lives on the BPM readout
+            // above the score instead (see `InstrumentTransportView`).
             Button {
                 showingOptionsPopover = true
             } label: {
@@ -152,39 +152,9 @@ struct RecordEvaluateControl: View {
             .buttonStyle(.plain)
             .foregroundStyle(.secondary)
             .disabled(isRecordingSession)
-            .help("Speed, count-in, metronome, and tolerance settings")
+            .help("Count-in, metronome, and tolerance settings")
             .popover(isPresented: $showingOptionsPopover, arrowEdge: .bottom) {
                 VStack(alignment: .leading, spacing: 12) {
-                    settingsSectionHeader("Speed")
-                    HStack(spacing: 8) {
-                        Slider(
-                            value: Binding(
-                                get: { engine.playbackRate },
-                                set: { engine.playbackRate = $0 }
-                            ),
-                            in: 0.25...1.25
-                        )
-                        .frame(width: 140)
-                        Text("\(Int((engine.playbackRate * 100).rounded()))%")
-                            .font(.caption)
-                            .monospacedDigit()
-                            .foregroundStyle(.secondary)
-                            .frame(width: 40, alignment: .leading)
-                    }
-                    // What that percentage actually means for a real
-                    // metronome — the whole point of showing it here
-                    // rather than making you do the math from the
-                    // percentage yourself. Uses the region's own tempo,
-                    // same as `beatInterval`, so it matches the click.
-                    HStack(spacing: 4) {
-                        Text("→")
-                            .foregroundStyle(.secondary)
-                        BPMIndicator(baseTempo: sequence.tempo(atTime: regionStart), playbackRate: engine.playbackRate)
-                    }
-                    .font(.caption)
-
-                    Divider()
-
                     settingsSectionHeader("Count-In & Metronome")
                     Toggle("4-beat lead-in", isOn: $leadInEnabled)
                         .toggleStyle(.checkbox)
@@ -327,8 +297,8 @@ struct RecordEvaluateControl: View {
                 // Along" stops (and scores) right at the end of the
                 // selected loop instead of playing on through the rest of
                 // the song.
-                if loopRegion != nil, engine.currentTime >= regionEnd {
-                    let shouldLoop = loopForever
+                if selectedRegion != nil, engine.currentTime >= regionEnd {
+                    let shouldLoop = isLoopEnabled
                     finishRecording()
                     // Checked here, not inside `finishRecording` itself —
                     // that function also runs when "Stop" is pressed by

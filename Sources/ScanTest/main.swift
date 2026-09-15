@@ -704,6 +704,46 @@ Task { @MainActor in
     slowEngine.stop()
     print("PASS: NotePlaybackEngine.playbackRate slows/resumes practice-speed playback")
 
+    // MARK: - NotePlaybackEngine.syncOffset must scale with playbackRate:
+    // it represents a fixed *real-world* output-latency correction, but
+    // `currentTime` is computed in piece-time units — subtracting it
+    // unscaled meant the correction was only right at 1.0x speed and
+    // silently over/under-corrected at any other speed.
+    let syncOffsetEngine = NotePlaybackEngine(midiProgram: 0)
+    syncOffsetEngine.load(NoteSequence(notes: [ScoreNote(startTime: 0, duration: 2.0, midiPitch: 60)]))
+    syncOffsetEngine.syncOffset = 0.6 // deliberately large, for a clear test signal
+    syncOffsetEngine.playbackRate = 0.5
+    syncOffsetEngine.play()
+    try? await Task.sleep(nanoseconds: 1_500_000_000)
+    // idealTime (piece-time) is 1.5s * 0.5 = 0.75s; the correct
+    // compensation is syncOffset*playbackRate = 0.3s, giving ~0.45s. The
+    // old, unscaled formula would have subtracted the full 0.6s instead,
+    // giving ~0.15s — a world apart from this, so a generous tolerance
+    // here still can't accidentally pass against the old behavior.
+    let expectedSyncOffsetTime = 0.5 * (1.5 - 0.6)
+    check(abs(syncOffsetEngine.currentTime - expectedSyncOffsetTime) < 0.15, "syncOffset should scale with playbackRate so a fixed real-world latency compensates correctly at any speed, expected ~\(expectedSyncOffsetTime)s got \(syncOffsetEngine.currentTime)")
+    syncOffsetEngine.stop()
+    print("PASS: NotePlaybackEngine.syncOffset scales with playbackRate")
+
+    // MARK: - NotePlaybackEngine.transposition: shifts playback pitch by
+    // semitones (a capo, effectively) without touching the tab/notation
+    // itself. Verified functionally, the same way the existing synthetic-
+    // sequence smoke test is — there's no hook here to observe the actual
+    // MIDI note number a sampler was asked to play, but the scheduling
+    // math (`note.midiPitch + transposition`) is a one-line change this
+    // at least confirms doesn't crash or otherwise disrupt playback.
+    let transposeEngine = NotePlaybackEngine(midiProgram: 0)
+    transposeEngine.load(NoteSequence(notes: [ScoreNote(startTime: 0, duration: 0.3, midiPitch: 60)]))
+    transposeEngine.transposition = 2
+    transposeEngine.play()
+    check(transposeEngine.isPlaying, "playback with a non-zero transposition should still start normally")
+    try? await Task.sleep(nanoseconds: 150_000_000)
+    transposeEngine.transposition = -3
+    check(transposeEngine.isPlaying, "changing transposition mid-playback shouldn't crash or stop playback")
+    try? await Task.sleep(nanoseconds: 300_000_000)
+    check(!transposeEngine.isPlaying, "engine should still auto-stop normally once the (transposed) sequence finishes")
+    print("PASS: NotePlaybackEngine.transposition shifts playback pitch without disrupting playback")
+
     // MARK: - Replacing a track's backing file: rating/tags/playlist
     // membership should migrate from the old path to the new one, and the
     // track's metadata should reflect the new file, not the old one.

@@ -175,6 +175,11 @@ public struct LearnSessionData: Sendable {
     public var practiceTarget: String?
     public var loopStart: TimeInterval?
     public var loopEnd: TimeInterval?
+    /// Whether the loop toggle was on — independent of whether a region
+    /// was selected (see `LearnSongView.isLoopEnabled`). `false` for a
+    /// session saved before this existed, when having a saved
+    /// `loopStart`/`loopEnd` at all implied looping was on.
+    public var isLoopEnabled: Bool
 
     public init(
         tabFilePath: String? = nil,
@@ -183,7 +188,8 @@ public struct LearnSessionData: Sendable {
         fullScoreFilePath: String? = nil,
         practiceTarget: String? = nil,
         loopStart: TimeInterval? = nil,
-        loopEnd: TimeInterval? = nil
+        loopEnd: TimeInterval? = nil,
+        isLoopEnabled: Bool = false
     ) {
         self.tabFilePath = tabFilePath
         self.vocalFilePath = vocalFilePath
@@ -192,6 +198,7 @@ public struct LearnSessionData: Sendable {
         self.practiceTarget = practiceTarget
         self.loopStart = loopStart
         self.loopEnd = loopEnd
+        self.isLoopEnabled = isLoopEnabled
     }
 }
 
@@ -375,6 +382,7 @@ private struct LearnSessionRecord: Codable, FetchableRecord, PersistableRecord {
     var practiceTarget: String?
     var loopStart: Double?
     var loopEnd: Double?
+    var isLoopEnabled: Bool
 
     enum CodingKeys: String, CodingKey {
         case trackPath = "track_path"
@@ -385,6 +393,7 @@ private struct LearnSessionRecord: Codable, FetchableRecord, PersistableRecord {
         case practiceTarget = "practice_target"
         case loopStart = "loop_start"
         case loopEnd = "loop_end"
+        case isLoopEnabled = "is_loop_enabled"
     }
 
     var asData: LearnSessionData {
@@ -395,11 +404,12 @@ private struct LearnSessionRecord: Codable, FetchableRecord, PersistableRecord {
             fullScoreFilePath: fullScoreFilePath,
             practiceTarget: practiceTarget,
             loopStart: loopStart,
-            loopEnd: loopEnd
+            loopEnd: loopEnd,
+            isLoopEnabled: isLoopEnabled
         )
     }
 
-    init(trackPath: String, tabFilePath: String?, vocalFilePath: String?, notationFilePath: String?, fullScoreFilePath: String?, practiceTarget: String?, loopStart: Double?, loopEnd: Double?) {
+    init(trackPath: String, tabFilePath: String?, vocalFilePath: String?, notationFilePath: String?, fullScoreFilePath: String?, practiceTarget: String?, loopStart: Double?, loopEnd: Double?, isLoopEnabled: Bool) {
         self.trackPath = trackPath
         self.tabFilePath = tabFilePath
         self.vocalFilePath = vocalFilePath
@@ -408,6 +418,7 @@ private struct LearnSessionRecord: Codable, FetchableRecord, PersistableRecord {
         self.practiceTarget = practiceTarget
         self.loopStart = loopStart
         self.loopEnd = loopEnd
+        self.isLoopEnabled = isLoopEnabled
     }
 
     init(trackPath: String, _ data: LearnSessionData) {
@@ -419,7 +430,8 @@ private struct LearnSessionRecord: Codable, FetchableRecord, PersistableRecord {
             fullScoreFilePath: data.fullScoreFilePath,
             practiceTarget: data.practiceTarget,
             loopStart: data.loopStart,
-            loopEnd: data.loopEnd
+            loopEnd: data.loopEnd,
+            isLoopEnabled: data.isLoopEnabled
         )
     }
 }
@@ -699,6 +711,17 @@ public final class GRDBLocalStore: RatingStore, PlaylistStore, @unchecked Sendab
         migrator.registerMigration("createExcludedPlaylists") { db in
             try db.create(table: "excluded_playlists") { t in
                 t.column("id", .text).notNull().primaryKey()
+            }
+        }
+        migrator.registerMigration("addLearnSessionIsLoopEnabled") { db in
+            try db.alter(table: "learn_sessions") { t in
+                // Defaults false for existing rows — a saved loop
+                // region used to *imply* looping was on (that was the
+                // whole meaning of a non-nil region before the loop
+                // toggle and the region became independent); false is a
+                // reasonable, non-surprising default to land on instead
+                // of guessing that old intent back.
+                t.add(column: "is_loop_enabled", .boolean).notNull().defaults(to: false)
             }
         }
         return migrator

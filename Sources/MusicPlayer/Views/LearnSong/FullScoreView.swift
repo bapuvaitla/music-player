@@ -35,10 +35,11 @@ struct FullScoreView: View {
     /// Same shared value as the three practice panes — see
     /// `InstrumentTransportView.syncOffsetMs`.
     @Binding var syncOffsetMs: Double
-    /// The one loop region shared with the song's own transport and every
-    /// practice pane (see `LearnSongView.applyLoopRegionToEngines`) — not
-    /// a region of this screen's own.
-    @Binding var loopRegion: ClosedRange<TimeInterval>?
+    /// The one loop region/toggle shared with the song's own transport and
+    /// every practice pane (see `LearnSongView.applyLoopRegionToEngines`)
+    /// — not a region of this screen's own.
+    @Binding var selectedRegion: ClosedRange<TimeInterval>?
+    @Binding var isLoopEnabled: Bool
 
     /// Used for click-to-seek/evaluation-coloring correlation in
     /// `NotationScoreView` (it needs *a* `NoteSequence` to map a clicked
@@ -67,7 +68,8 @@ struct FullScoreView: View {
             if musicXMLData != nil, !parts.isEmpty {
                 transport
                 PlaybackLoopControl(
-                    loopRegion: $loopRegion,
+                    selectedRegion: $selectedRegion,
+                    isLoopEnabled: $isLoopEnabled,
                     duration: engine.duration,
                     currentTime: engine.currentTime,
                     onSeek: { engine.seek(to: $0) },
