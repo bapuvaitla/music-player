@@ -149,13 +149,13 @@ struct LargeNowPlayingBarView: View {
                 loopStart = newValue.lowerBound
                 loopEnd = newValue.upperBound
             }
-            if isThisTrackCurrent { player.loopRegion = isLoopEnabled ? newValue : nil }
+            if isThisTrackCurrent { player.loopRegion = newValue }
         }
         .onChange(of: isLoopEnabled) { _, newValue in
             guard newValue != lastWrittenIsLoopEnabled else { return }
             lastWrittenIsLoopEnabled = newValue
             loopEnabled = newValue
-            if isThisTrackCurrent { player.loopRegion = newValue ? selectedRegion : nil }
+            if isThisTrackCurrent { player.loopsRegion = newValue }
         }
     }
 
@@ -169,7 +169,10 @@ struct LargeNowPlayingBarView: View {
         selectedRegion = region
         lastWrittenIsLoopEnabled = loopEnabled
         isLoopEnabled = loopEnabled
-        if isThisTrackCurrent { player.loopRegion = loopEnabled ? region : nil }
+        if isThisTrackCurrent {
+            player.loopRegion = region
+            player.loopsRegion = loopEnabled
+        }
     }
 
     private func timeString(_ time: TimeInterval) -> String {

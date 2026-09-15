@@ -238,24 +238,28 @@ struct LearnSongView: View {
     /// here) into every practice engine too, so it's a single region
     /// shared across the song, every stave's reference playback, and
     /// "Play Along"/"Sing Along" — not a separate one re-drawn per pane.
-    /// Only actually applied to an engine's own `loopRegion` when
-    /// `isLoopEnabled` is on — `selectedRegion` by itself just means "a
-    /// region is selected," not "loop it," so an engine should only
-    /// auto-loop when the shared toggle says so.
-    /// `RecordEvaluateControl` still momentarily clears its own engine's
-    /// copy while actively recording (see its `startRecording`/
-    /// `finishRecording`) so its own timer — not the engine's built-in
-    /// auto-loop — is what decides when a take ends; this is what that
-    /// copy resets back to once a take finishes. A freshly-constructed
-    /// engine otherwise starts at its own default of nil regardless of
-    /// what's already set here, so this also has to run once at launch,
-    /// same as `applySyncOffsetToEngines`.
+    /// `selectedRegion` is always pushed to every engine's own
+    /// `loopRegion` regardless of `isLoopEnabled` — a region can be
+    /// selected purely to scope where playback stops, played through
+    /// once, without repeating it (see `NotePlaybackEngine.loopsRegion`,
+    /// which is what `isLoopEnabled` maps onto here). `RecordEvaluateControl`
+    /// still momentarily clears its own engine's copy while actively
+    /// recording (see its `startRecording`/`finishRecording`) so its own
+    /// timer — not the engine's built-in region handling — is what
+    /// decides when a take ends; this is what that copy resets back to
+    /// once a take finishes. A freshly-constructed engine otherwise
+    /// starts at its own default of nil/true regardless of what's already
+    /// set here, so this also has to run once at launch, same as
+    /// `applySyncOffsetToEngines`.
     private func applyLoopRegionToEngines() {
-        let activeLoop = isLoopEnabled ? selectedRegion : nil
-        tabEngine.loopRegion = activeLoop
-        vocalEngine.loopRegion = activeLoop
-        notationEngine.loopRegion = activeLoop
-        fullScoreEngine.loopRegion = activeLoop
+        tabEngine.loopRegion = selectedRegion
+        tabEngine.loopsRegion = isLoopEnabled
+        vocalEngine.loopRegion = selectedRegion
+        vocalEngine.loopsRegion = isLoopEnabled
+        notationEngine.loopRegion = selectedRegion
+        notationEngine.loopsRegion = isLoopEnabled
+        fullScoreEngine.loopRegion = selectedRegion
+        fullScoreEngine.loopsRegion = isLoopEnabled
     }
 
     private func prewarmCurrentRecorder() {

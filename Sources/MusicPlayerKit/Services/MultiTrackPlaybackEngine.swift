@@ -39,7 +39,10 @@ public final class MultiTrackPlaybackEngine: ObservableObject {
     public var volume: Float = 0.8 {
         didSet { engine.mainMixerNode.outputVolume = volume }
     }
+    /// See `NotePlaybackEngine.loopRegion`/`loopsRegion` — identical
+    /// purpose and split (a region can be scoped without looping it).
     public var loopRegion: ClosedRange<TimeInterval>?
+    public var loopsRegion: Bool = true
     /// See `NotePlaybackEngine.syncOffset` — identical purpose.
     public var syncOffset: TimeInterval = 0
     public var playbackRate: Double = 1.0 {
@@ -278,7 +281,13 @@ public final class MultiTrackPlaybackEngine: ObservableObject {
                 // not subtracted unscaled.
                 self.currentTime = max(0, idealTime - self.syncOffset * self.playbackRate)
                 if let loopRegion = self.loopRegion, self.currentTime >= loopRegion.upperBound {
-                    self.seek(to: loopRegion.lowerBound)
+                    if self.loopsRegion {
+                        self.seek(to: loopRegion.lowerBound)
+                    } else {
+                        // `pause()`, not `stop()` — see
+                        // `NotePlaybackEngine`'s identical fix.
+                        self.pause()
+                    }
                     return
                 }
                 if self.currentTime >= self.duration {

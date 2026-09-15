@@ -682,6 +682,29 @@ Task { @MainActor in
     check(loopedNoteEngine.loopRegion == nil, "loopRegion should reset automatically whenever a new sequence is loaded")
     print("PASS: NotePlaybackEngine.loopRegion loops a section of the tab/vocal playback")
 
+    // MARK: - NotePlaybackEngine.loopsRegion = false: a region can be
+    // selected purely to scope where playback stops, played through once
+    // rather than repeated — the actual behavior requested after the
+    // first version of loop unification only let a region matter if it
+    // also looped.
+    let scopedOnceEngine = NotePlaybackEngine(midiProgram: 0)
+    scopedOnceEngine.load(NoteSequence(notes: [
+        ScoreNote(startTime: 0, duration: 0.15, midiPitch: 60),
+        ScoreNote(startTime: 0.15, duration: 0.15, midiPitch: 62),
+        ScoreNote(startTime: 0.3, duration: 0.15, midiPitch: 64),
+        ScoreNote(startTime: 0.45, duration: 0.15, midiPitch: 65)
+    ]))
+    scopedOnceEngine.loopRegion = 0...0.2
+    scopedOnceEngine.loopsRegion = false
+    scopedOnceEngine.play()
+    // Full sequence is 0.6s; reaching the region's end (0.2s) should pause
+    // there well before that, not continue into the rest of the sequence.
+    try? await Task.sleep(nanoseconds: 500_000_000)
+    check(!scopedOnceEngine.isPlaying, "playback should stop at the end of a scoped-but-not-looping region instead of continuing into the rest of the sequence")
+    check(abs(scopedOnceEngine.currentTime - 0.2) < 0.1, "playback should stop right at the region's end, got \(scopedOnceEngine.currentTime)")
+    scopedOnceEngine.stop()
+    print("PASS: NotePlaybackEngine.loopsRegion = false plays a selected region once instead of repeating it")
+
     // MARK: - NotePlaybackEngine.playbackRate: slows practice playback down
     // without affecting pitch (notes are re-scheduled further apart, not
     // resampled) — and a mid-playback rate change re-schedules cleanly

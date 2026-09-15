@@ -15,12 +15,17 @@ public final class PlayerController: ObservableObject {
     public var onTrackFinished: (() -> Void)?
 
     /// When set, playback jumps back to `lowerBound` once it reaches
-    /// `upperBound`, instead of continuing on — used by Learn Song to loop
-    /// a section of the song while practicing. `nil` (the default) has no
-    /// effect on normal playback. Cleared automatically whenever a new
-    /// track starts, since a loop region only makes sense for the track it
-    /// was set on.
+    /// `upperBound` (or, with `loopsRegion` false, just stops there
+    /// instead) — used by Learn Song to scope/loop a section of the song
+    /// while practicing. `nil` (the default) has no effect on normal
+    /// playback. Cleared automatically whenever a new track starts, since
+    /// a loop region only makes sense for the track it was set on.
     public var loopRegion: ClosedRange<TimeInterval>?
+    /// When true (the default) and `loopRegion` is set, reaching its end
+    /// seeks back to its start and keeps playing. When false, reaching
+    /// its end just stops — a region can be selected purely to scope
+    /// where playback stops, played through once, without repeating it.
+    public var loopsRegion: Bool = true
 
     /// Fired whenever a track stops being current (skipped, replaced, or
     /// finished), with how much of it was actually heard, in units of "one
@@ -160,7 +165,16 @@ public final class PlayerController: ObservableObject {
                     self.accumulatedPlayedSeconds += 0.25
                 }
                 if let loopRegion = self.loopRegion, self.currentTime >= loopRegion.upperBound {
-                    self.seek(to: loopRegion.lowerBound)
+                    if self.loopsRegion {
+                        self.seek(to: loopRegion.lowerBound)
+                    } else {
+                        // `pause()`, not `stop()` — this should just halt
+                        // at the end of the selected region and stay on
+                        // this track, not tear down playback state or
+                        // (via `onTrackFinished`) advance to the next one
+                        // in the queue.
+                        self.pause()
+                    }
                 }
             }
         }

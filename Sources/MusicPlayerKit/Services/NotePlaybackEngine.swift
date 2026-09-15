@@ -49,10 +49,17 @@ public final class NotePlaybackEngine: ObservableObject {
         didSet { engine.mainMixerNode.outputVolume = volume }
     }
 
-    /// Same idea as `PlayerController.loopRegion` — loops a section of
-    /// this tab/melody while practicing, independent of the song's own
-    /// loop. Cleared automatically whenever a new sequence is loaded.
+    /// Same idea as `PlayerController.loopRegion` — scopes playback of
+    /// this tab/melody to a section while practicing, independent of the
+    /// song's own loop. Cleared automatically whenever a new sequence is
+    /// loaded. See `loopsRegion` for whether reaching the end of it loops
+    /// back or just stops.
     public var loopRegion: ClosedRange<TimeInterval>?
+    /// When true (the default) and `loopRegion` is set, reaching its end
+    /// seeks back to its start and keeps playing. When false, reaching
+    /// its end just stops — a region can be selected purely to scope
+    /// where playback stops, played through once, without repeating it.
+    public var loopsRegion: Bool = true
 
     /// Fraction of normal speed, e.g. 0.5 = half speed — for slowing a
     /// passage down while practicing. Pitch is unaffected (notes are
@@ -318,7 +325,17 @@ public final class NotePlaybackEngine: ObservableObject {
                 // practice speed changed.
                 self.currentTime = max(0, idealTime - self.syncOffset * self.playbackRate)
                 if let loopRegion = self.loopRegion, self.currentTime >= loopRegion.upperBound {
-                    self.seek(to: loopRegion.lowerBound)
+                    if self.loopsRegion {
+                        self.seek(to: loopRegion.lowerBound)
+                    } else {
+                        // `pause()`, not `stop()` — this should halt right
+                        // at the end of the selected region so it's
+                        // obvious where playback stopped, not reset the
+                        // playhead back to the very beginning of the
+                        // whole sequence the way finishing the *entire*
+                        // sequence does below.
+                        self.pause()
+                    }
                     return
                 }
                 if self.currentTime >= self.sequence.duration {
