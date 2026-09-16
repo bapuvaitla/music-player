@@ -105,34 +105,49 @@ struct LargeNowPlayingBarView: View {
             }
 
             // The loop toggle, reset, and the scrub bar it applies to all
-            // live in one row at one spacing value — they used to be split
-            // across two rows (toggle/reset up top, scrub bar below) with
-            // two different gaps, which made the "these go together" grouping
-            // hard to read. One `HStack` with a single spacing keeps that
-            // consistent, matching `PlaybackLoopControl`'s layout.
-            HStack(spacing: 10) {
-                // "Select a section [of the song] to loop" — sized up to
-                // match the rest of this bar's new prominence. Drag either
-                // handle below to select/adjust a region regardless of
-                // whether this is on; it just controls whether it repeats.
-                Toggle(isOn: $loopEnabled) {
-                    Image(systemName: "repeat")
-                        .font(.system(size: 15))
-                }
-                .toggleStyle(.button)
-                .tint(.accentColor)
-                .help("Loop the selected region")
+            // live in one row — they used to be split across two rows
+            // (toggle/reset up top, scrub bar below) with two different
+            // gaps, which made the "these go together" grouping hard to
+            // read. The toggle and reset are a tight pair (8pt); there's
+            // extra room (16pt) before the time label/scrub bar/time label
+            // cluster, matching `PlaybackLoopControl`'s layout.
+            HStack(spacing: 16) {
+                HStack(spacing: 8) {
+                    // "Select a section [of the song] to loop" — sized up
+                    // to match the rest of this bar's new prominence. Drag
+                    // either handle below to select/adjust a region
+                    // regardless of whether this is on; it just controls
+                    // whether it repeats. Filled solid green when on,
+                    // plain gray glyph with no fill when off — a flat tint
+                    // (as a system `Toggle` rendered it) read as "on" even
+                    // at rest, so the two states need to look nothing
+                    // alike rather than just a shade apart.
+                    Button {
+                        loopEnabled.toggle()
+                    } label: {
+                        Image(systemName: "repeat")
+                            .font(.system(size: 15, weight: .semibold))
+                            .foregroundStyle(loopEnabled ? Color.white : Color.secondary)
+                            .frame(width: 28, height: 22)
+                            .background(
+                                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                    .fill(loopEnabled ? Color.green : Color.clear)
+                            )
+                    }
+                    .buttonStyle(.plain)
+                    .help("Loop the selected region")
 
-                Button {
-                    reset()
-                } label: {
-                    Image(systemName: "xmark.circle")
-                        .font(.system(size: 14))
+                    Button {
+                        reset()
+                    } label: {
+                        Image(systemName: "xmark.circle")
+                            .font(.system(size: 14))
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(.secondary)
+                    .disabled(selectedRegion == nil)
+                    .help("Reset to the full song")
                 }
-                .buttonStyle(.plain)
-                .foregroundStyle(.secondary)
-                .disabled(selectedRegion == nil)
-                .help("Reset to the full song")
 
                 Text(timeString(player.currentTime))
                     .font(.system(size: 10)).foregroundStyle(.secondary).monospacedDigit()
@@ -140,6 +155,7 @@ struct LargeNowPlayingBarView: View {
 
                 LoopScrubBar(
                     loopEnabled: loopEnabled,
+                    isRegionSelected: selectedRegion != nil,
                     loopStart: $loopStart,
                     loopEnd: $loopEnd,
                     duration: max(player.duration, loopEnd),

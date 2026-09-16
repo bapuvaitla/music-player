@@ -694,16 +694,19 @@ Task { @MainActor in
         ScoreNote(startTime: 0.3, duration: 0.15, midiPitch: 64),
         ScoreNote(startTime: 0.45, duration: 0.15, midiPitch: 65)
     ]))
-    scopedOnceEngine.loopRegion = 0...0.2
+    scopedOnceEngine.loopRegion = 0.05...0.2
     scopedOnceEngine.loopsRegion = false
     scopedOnceEngine.play()
     // Full sequence is 0.6s; reaching the region's end (0.2s) should pause
-    // there well before that, not continue into the rest of the sequence.
+    // there well before that, not continue into the rest of the sequence —
+    // and snap back to the region's *start* (0.05s), not sit at its end,
+    // so a subsequent Play press plays the section again instead of doing
+    // nothing (it's already past the end).
     try? await Task.sleep(nanoseconds: 500_000_000)
     check(!scopedOnceEngine.isPlaying, "playback should stop at the end of a scoped-but-not-looping region instead of continuing into the rest of the sequence")
-    check(abs(scopedOnceEngine.currentTime - 0.2) < 0.1, "playback should stop right at the region's end, got \(scopedOnceEngine.currentTime)")
+    check(abs(scopedOnceEngine.currentTime - 0.05) < 0.1, "playback should snap back to the region's start after stopping, got \(scopedOnceEngine.currentTime)")
     scopedOnceEngine.stop()
-    print("PASS: NotePlaybackEngine.loopsRegion = false plays a selected region once instead of repeating it")
+    print("PASS: NotePlaybackEngine.loopsRegion = false plays a selected region once, then resets to the region's start")
 
     // MARK: - NotePlaybackEngine.playbackRate: slows practice playback down
     // without affecting pitch (notes are re-scheduled further apart, not

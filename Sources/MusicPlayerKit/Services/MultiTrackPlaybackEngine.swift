@@ -284,9 +284,11 @@ public final class MultiTrackPlaybackEngine: ObservableObject {
                     if self.loopsRegion {
                         self.seek(to: loopRegion.lowerBound)
                     } else {
-                        // `pause()`, not `stop()` — see
-                        // `NotePlaybackEngine`'s identical fix.
+                        // `pause()`, not `stop()`, plus a seek back to the
+                        // region's start — see `NotePlaybackEngine`'s
+                        // identical fix.
                         self.pause()
+                        self.seek(to: loopRegion.lowerBound)
                     }
                     return
                 }

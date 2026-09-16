@@ -76,33 +76,54 @@ struct PlaybackLoopControl: View {
         return min(duration, 5)
     }
 
-    var body: some View {
-        HStack(spacing: 10) {
-            Toggle(isOn: $loopEnabled) {
-                Image(systemName: "repeat")
-                    .font(.system(size: 15, weight: .semibold))
-            }
-            .toggleStyle(.button)
-            .tint(.accentColor)
-            .help("Loop the selected region")
+    private var isRegionSelected: Bool { selectedRegion != nil }
 
-            // Drag either handle on the bar below to select/adjust a
-            // region — that's always available, regardless of whether
-            // looping is on. This just clears back to "no region, whole
-            // song" once you're done with one.
-            Button {
-                reset()
-            } label: {
-                Image(systemName: "xmark.circle")
-                    .font(.system(size: 14))
+    var body: some View {
+        // The toggle and reset button are a tight pair (8pt) — one acts on
+        // the other's target — but there's extra room (16pt) before the
+        // scrub bar itself, so the reset button doesn't read as glued to
+        // the measure ruler it's nowhere near operating on directly.
+        HStack(spacing: 16) {
+            HStack(spacing: 8) {
+                Button {
+                    loopEnabled.toggle()
+                } label: {
+                    // Filled solid green when on, plain gray glyph with no
+                    // fill when off — a flat tint (as a system `Toggle`
+                    // rendered it) read as "on" even at rest, so this
+                    // needs the two states to look nothing alike rather
+                    // than just a shade apart.
+                    Image(systemName: "repeat")
+                        .font(.system(size: 15, weight: .semibold))
+                        .foregroundStyle(loopEnabled ? Color.white : Color.secondary)
+                        .frame(width: 28, height: 22)
+                        .background(
+                            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                .fill(loopEnabled ? Color.green : Color.clear)
+                        )
+                }
+                .buttonStyle(.plain)
+                .help("Loop the selected region")
+
+                // Drag either handle on the bar below to select/adjust a
+                // region — that's always available, regardless of whether
+                // looping is on. This just clears back to "no region,
+                // whole song" once you're done with one.
+                Button {
+                    reset()
+                } label: {
+                    Image(systemName: "xmark.circle")
+                        .font(.system(size: 14))
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(.secondary)
+                .disabled(selectedRegion == nil)
+                .help("Reset to the full song")
             }
-            .buttonStyle(.plain)
-            .foregroundStyle(.secondary)
-            .disabled(selectedRegion == nil)
-            .help("Reset to the full song")
 
             LoopScrubBar(
                 loopEnabled: loopEnabled,
+                isRegionSelected: isRegionSelected,
                 loopStart: $loopStart,
                 loopEnd: $loopEnd,
                 duration: max(duration, loopEnd),

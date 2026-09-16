@@ -1,9 +1,10 @@
 import SwiftUI
 
 /// A scrub bar with two draggable handles marking a region, drawn as a
-/// highlighted band between them — always visible and draggable, whether
-/// or not `loopEnabled` is on (that only recolors the band/handles, as a
-/// hint for whether the region will repeat or just play through once).
+/// highlighted band between them — always visible and draggable regardless
+/// of `isRegionSelected`/`loopEnabled` (those only recolor the band/
+/// handles: plain gray with nothing selected, green once a region is
+/// selected, bold green once it also loops).
 /// Used by the song's transport (`LargeNowPlayingBarView`) and each
 /// practice pane/full score (`PlaybackLoopControl`) alike — all of them
 /// read and write the same one shared region (see
@@ -24,6 +25,12 @@ import SwiftUI
 /// range control like this in SwiftUI.
 struct LoopScrubBar: View {
     let loopEnabled: Bool
+    /// Whether the parent's shared region is an actual user selection
+    /// (`selectedRegion != nil`) rather than just this bar's own default
+    /// `loopStart...loopEnd` span before anything's been dragged — drives
+    /// the plain-gray-vs-green distinction below, independent of whether
+    /// that selection also loops.
+    let isRegionSelected: Bool
     @Binding var loopStart: TimeInterval
     @Binding var loopEnd: TimeInterval
     let duration: TimeInterval
@@ -70,30 +77,38 @@ struct LoopScrubBar: View {
                 // region in the first place, so gating it behind the loop
                 // toggle (as this used to do) meant there was no way to
                 // select a region at all without first turning looping
-                // on. `loopEnabled` only changes the color/weight, as a
-                // hint for whether it'll repeat (bold accent) or just play
-                // through once (quiet gray) — deliberately a big contrast
-                // rather than a subtle tint, so "this will loop" reads at
-                // a glance.
+                // on. Three visually distinct states instead of just two:
+                // plain gray with nothing selected, green once a region is
+                // actually selected, and bold green (heavier + a glow)
+                // once that selection also loops — so "will this repeat"
+                // still reads at a glance, on top of "is anything selected
+                // at all."
                 let startX = width * CGFloat(loopStart / safeDuration)
                 let endX = width * CGFloat(loopEnd / safeDuration)
                 Capsule()
-                    .fill(loopEnabled ? Color.accentColor : Color.secondary.opacity(0.2))
+                    .fill(bandColor)
                     .frame(width: max(2, endX - startX), height: loopEnabled ? 9 : 6)
-                    .shadow(color: loopEnabled ? Color.accentColor.opacity(0.45) : .clear, radius: 3)
+                    .shadow(color: loopEnabled ? Color.green.opacity(0.45) : .clear, radius: 3)
                     .offset(x: startX)
 
-                Circle()
-                    .fill(Color.accentColor)
-                    .frame(width: 13, height: 13)
-                    .offset(x: width * CGFloat(min(1, max(0, currentTime / safeDuration))) - 6.5)
-
-                handle(time: loopStart, width: width, duration: safeDuration, isLoopEnabled: loopEnabled) { newTime in
+                handle(time: loopStart, width: width, duration: safeDuration) { newTime in
                     loopStart = min(newTime, loopEnd - 0.5)
                 }
-                handle(time: loopEnd, width: width, duration: safeDuration, isLoopEnabled: loopEnabled) { newTime in
+                handle(time: loopEnd, width: width, duration: safeDuration) { newTime in
                     loopEnd = max(newTime, loopStart + 0.5)
                 }
+
+                // Drawn last (on top of the band/handles) with a white
+                // ring around it — otherwise the playhead could end up
+                // visually swallowed by a handle it passes under, or lost
+                // against the band's own glow once looping makes both the
+                // same bold green.
+                Circle()
+                    .fill(Color.accentColor)
+                    .overlay(Circle().strokeBorder(Color.white, lineWidth: 1.5))
+                    .shadow(color: .black.opacity(0.3), radius: 1.5)
+                    .frame(width: 13, height: 13)
+                    .offset(x: width * CGFloat(min(1, max(0, currentTime / safeDuration))) - 6.5)
             }
             .coordinateSpace(name: "loopBar")
             .contentShape(Rectangle())
@@ -117,19 +132,38 @@ struct LoopScrubBar: View {
         return max(1, Int((minLabelSpacing / max(pixelsPerBar, 1)).rounded(.up)))
     }
 
+    /// Plain gray with no selection at all, green once a region is
+    /// actually selected, bold (fully-opaque, glowing) green once that
+    /// selection also loops.
+    private var bandColor: Color {
+        if loopEnabled { return Color.green }
+        if isRegionSelected { return Color.green.opacity(0.6) }
+        return Color.secondary.opacity(0.15)
+    }
+
+    /// Same three tiers as `bandColor`, but never as faint as the band's
+    /// own resting gray — a handle still needs to read as "grab me" even
+    /// with nothing selected, whereas the band itself is fine sitting
+    /// nearly invisible at rest.
+    private var handleColor: Color {
+        if loopEnabled { return Color.green }
+        if isRegionSelected { return Color.green.opacity(0.75) }
+        return Color.secondary.opacity(0.45)
+    }
+
     private func handle(
         time: TimeInterval,
         width: CGFloat,
         duration: TimeInterval,
-        isLoopEnabled: Bool,
         onChange: @escaping (TimeInterval) -> Void
     ) -> some View {
         let x = width * CGFloat(time / duration)
+        let size: CGFloat = loopEnabled ? 10 : (isRegionSelected ? 9 : 8)
         return RoundedRectangle(cornerRadius: 3, style: .continuous)
-            .fill(isLoopEnabled ? Color.accentColor : Color.secondary.opacity(0.45))
-            .frame(width: isLoopEnabled ? 10 : 8, height: isLoopEnabled ? 24 : 20)
-            .shadow(color: isLoopEnabled ? Color.accentColor.opacity(0.5) : .clear, radius: 2)
-            .offset(x: x - (isLoopEnabled ? 5 : 4))
+            .fill(handleColor)
+            .frame(width: size, height: size == 8 ? 20 : (size == 9 ? 22 : 24))
+            .shadow(color: loopEnabled ? Color.green.opacity(0.5) : .clear, radius: 2)
+            .offset(x: x - size / 2)
             .gesture(
                 DragGesture(minimumDistance: 0, coordinateSpace: .named("loopBar"))
                     .onChanged { value in

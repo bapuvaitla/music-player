@@ -169,11 +169,14 @@ public final class PlayerController: ObservableObject {
                         self.seek(to: loopRegion.lowerBound)
                     } else {
                         // `pause()`, not `stop()` — this should just halt
-                        // at the end of the selected region and stay on
-                        // this track, not tear down playback state or
-                        // (via `onTrackFinished`) advance to the next one
-                        // in the queue.
+                        // and stay on this track, not tear down playback
+                        // state or (via `onTrackFinished`) advance to the
+                        // next one in the queue. But it should still snap
+                        // back to the region's start rather than sit at
+                        // its end, so pressing Play again just plays the
+                        // section again instead of doing nothing.
                         self.pause()
+                        self.seek(to: loopRegion.lowerBound)
                     }
                 }
             }

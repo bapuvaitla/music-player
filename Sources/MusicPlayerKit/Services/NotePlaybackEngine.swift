@@ -328,13 +328,16 @@ public final class NotePlaybackEngine: ObservableObject {
                     if self.loopsRegion {
                         self.seek(to: loopRegion.lowerBound)
                     } else {
-                        // `pause()`, not `stop()` — this should halt right
-                        // at the end of the selected region so it's
-                        // obvious where playback stopped, not reset the
-                        // playhead back to the very beginning of the
-                        // whole sequence the way finishing the *entire*
-                        // sequence does below.
+                        // `pause()`, not `stop()` — this shouldn't tear
+                        // down playback state or reset all the way back to
+                        // the start of the *whole* sequence the way
+                        // finishing it entirely does below. But it should
+                        // still snap back to the *region's* start rather
+                        // than sit at its end: with looping off, one Play
+                        // press should always mean "play this section",
+                        // not "do nothing because we're already past it."
                         self.pause()
+                        self.seek(to: loopRegion.lowerBound)
                     }
                     return
                 }
