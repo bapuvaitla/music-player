@@ -70,14 +70,17 @@ struct LoopScrubBar: View {
                 // region in the first place, so gating it behind the loop
                 // toggle (as this used to do) meant there was no way to
                 // select a region at all without first turning looping
-                // on. `loopEnabled` only changes the color, as a hint for
-                // whether it'll repeat (accent) or just play through once
-                // (secondary/gray).
+                // on. `loopEnabled` only changes the color/weight, as a
+                // hint for whether it'll repeat (bold accent) or just play
+                // through once (quiet gray) — deliberately a big contrast
+                // rather than a subtle tint, so "this will loop" reads at
+                // a glance.
                 let startX = width * CGFloat(loopStart / safeDuration)
                 let endX = width * CGFloat(loopEnd / safeDuration)
                 Capsule()
-                    .fill((loopEnabled ? Color.accentColor : Color.secondary).opacity(0.35))
-                    .frame(width: max(2, endX - startX), height: 6)
+                    .fill(loopEnabled ? Color.accentColor : Color.secondary.opacity(0.2))
+                    .frame(width: max(2, endX - startX), height: loopEnabled ? 9 : 6)
+                    .shadow(color: loopEnabled ? Color.accentColor.opacity(0.45) : .clear, radius: 3)
                     .offset(x: startX)
 
                 Circle()
@@ -123,9 +126,10 @@ struct LoopScrubBar: View {
     ) -> some View {
         let x = width * CGFloat(time / duration)
         return RoundedRectangle(cornerRadius: 3, style: .continuous)
-            .fill(isLoopEnabled ? Color.accentColor : Color.secondary)
-            .frame(width: 9, height: 22)
-            .offset(x: x - 4.5)
+            .fill(isLoopEnabled ? Color.accentColor : Color.secondary.opacity(0.45))
+            .frame(width: isLoopEnabled ? 10 : 8, height: isLoopEnabled ? 24 : 20)
+            .shadow(color: isLoopEnabled ? Color.accentColor.opacity(0.5) : .clear, radius: 2)
+            .offset(x: x - (isLoopEnabled ? 5 : 4))
             .gesture(
                 DragGesture(minimumDistance: 0, coordinateSpace: .named("loopBar"))
                     .onChanged { value in

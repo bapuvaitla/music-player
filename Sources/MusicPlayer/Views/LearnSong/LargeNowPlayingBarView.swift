@@ -102,7 +102,15 @@ struct LargeNowPlayingBarView: View {
                     .foregroundStyle(.secondary)
 
                 Spacer()
+            }
 
+            // The loop toggle, reset, and the scrub bar it applies to all
+            // live in one row at one spacing value — they used to be split
+            // across two rows (toggle/reset up top, scrub bar below) with
+            // two different gaps, which made the "these go together" grouping
+            // hard to read. One `HStack` with a single spacing keeps that
+            // consistent, matching `PlaybackLoopControl`'s layout.
+            HStack(spacing: 10) {
                 // "Select a section [of the song] to loop" — sized up to
                 // match the rest of this bar's new prominence. Drag either
                 // handle below to select/adjust a region regardless of
@@ -125,9 +133,7 @@ struct LargeNowPlayingBarView: View {
                 .foregroundStyle(.secondary)
                 .disabled(selectedRegion == nil)
                 .help("Reset to the full song")
-            }
 
-            HStack(spacing: 6) {
                 Text(timeString(player.currentTime))
                     .font(.system(size: 10)).foregroundStyle(.secondary).monospacedDigit()
                     .frame(width: 30, alignment: .trailing)

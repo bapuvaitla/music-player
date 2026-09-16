@@ -161,8 +161,8 @@ struct InstrumentTransportView: View {
             Button {
                 showingTransposePopover = true
             } label: {
-                Text("♯")
-                    .font(.system(size: 15, weight: .semibold))
+                Text("♯/♭")
+                    .font(.system(size: 13, weight: .semibold))
             }
             .buttonStyle(.plain)
             .foregroundStyle(engine.transposition != 0 ? Color.primary : Color.secondary)
