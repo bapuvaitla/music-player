@@ -1055,6 +1055,26 @@ Task { @MainActor in
     check(perfClosePairResult.perNote[1].hit, "the second of two closely-spaced notes should bind to its own onset, not the first note's, under a wide tolerance")
     print("PASS: PerformanceEvaluator matches each note to its own closest onset, not just the first one in range")
 
+    // MARK: - A wide requested tolerance shouldn't just pick the *closest*
+    // onset within reach (the case above) — it shouldn't be able to reach
+    // a neighbor's onset *at all*. Two notes 100ms apart, but only the
+    // first was actually played: without capping each note's own window to
+    // half the gap to its nearest neighbor, the second note's 300ms-wide
+    // window would still contain the first note's very real onset (the
+    // only one in the whole recording), match it as "closest within
+    // range," and check the wrong target frequency there — reporting a
+    // note that was never played as either a hit or a wrong-note, instead
+    // of the plain miss it actually is.
+    let perfCappedTolerancePair = NoteSequence(notes: [
+        ScoreNote(startTime: 0.3, duration: 0.4, midiPitch: 40), // E2, actually played
+        ScoreNote(startTime: 0.4, duration: 0.4, midiPitch: 64)  // E4, 100ms later, never played
+    ])
+    let perfCappedToleranceBuffer = synthesizeBuffer(playing: [perfCappedTolerancePair.notes[0]], totalDuration: 1.5, sampleRate: evalSampleRate)
+    let perfCappedToleranceResult = PerformanceEvaluator.evaluate(samples: perfCappedToleranceBuffer, sampleRate: evalSampleRate, against: perfCappedTolerancePair, onsetTolerance: 0.3)
+    check(perfCappedToleranceResult.perNote[0].hit, "the actually-played note should still be a hit")
+    check(!perfCappedToleranceResult.perNote[1].hit, "the never-played neighbor should not falsely bind to the first note's onset even under a wide requested tolerance")
+    print("PASS: PerformanceEvaluator caps each note's onset-matching window to half the gap to its nearest neighbor, regardless of the requested tolerance")
+
     // MARK: - Result.accuracy/correctCount count an early/late note as
     // correct, not just an exact hit — something genuinely right was
     // played, just not precisely on the beat, which shouldn't flunk the

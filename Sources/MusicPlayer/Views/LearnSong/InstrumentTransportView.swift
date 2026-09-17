@@ -141,12 +141,23 @@ struct InstrumentTransportView: View {
                     // metronome — the whole point of showing it here
                     // rather than making you do the math from the
                     // percentage yourself.
-                    HStack(spacing: 4) {
-                        Text("→")
-                            .foregroundStyle(.secondary)
-                        BPMIndicator(baseTempo: sequence.tempo(atTime: engine.currentTime), playbackRate: engine.playbackRate)
+                    HStack {
+                        HStack(spacing: 4) {
+                            Text("→")
+                                .foregroundStyle(.secondary)
+                            BPMIndicator(baseTempo: sequence.tempo(atTime: engine.currentTime), playbackRate: engine.playbackRate)
+                        }
+                        .font(.body)
+                        Spacer()
+                        // Matches `SyncOffsetButton`'s own reset link —
+                        // only shown once there's actually something to
+                        // reset, back to full/original speed.
+                        if engine.playbackRate != 1.0 {
+                            Button("Reset") { engine.playbackRate = 1.0 }
+                                .buttonStyle(.link)
+                                .font(.caption)
+                        }
                     }
-                    .font(.body)
                 }
                 .padding(14)
             }

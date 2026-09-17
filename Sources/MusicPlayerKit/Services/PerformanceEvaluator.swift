@@ -112,6 +112,14 @@ public enum PerformanceEvaluator {
     ///   - pitchTolerance: overrides `Self.pitchTolerance`, in cents — same
     ///     idea, for a string/instrument that tends to drift further out
     ///     of tune than others.
+    ///   - fullSequence: the complete piece (or region) `sequence` is
+    ///     drawn from, when `sequence` is itself only a partial batch —
+    ///     `RecordEvaluateControl` scores a take incrementally, a few
+    ///     notes at a time as each one "settles," so `sequence.notes`
+    ///     alone often doesn't include a note's real neighbors even though
+    ///     the full piece does. Defaults to `sequence` itself, so a caller
+    ///     that always passes the complete piece (every ScanTest case, a
+    ///     single finishRecording() catch-up pass) needs no change.
     public static func evaluate(
         samples: [Float],
         sampleRate: Double,
@@ -119,18 +127,32 @@ public enum PerformanceEvaluator {
         isVocal: Bool = false,
         regionStart: TimeInterval = 0,
         onsetTolerance: TimeInterval = Self.onsetTolerance,
-        pitchTolerance: Double = Self.pitchTolerance
+        pitchTolerance: Double = Self.pitchTolerance,
+        fullSequence: NoteSequence? = nil
     ) -> Result {
         let onsets = detectOnsets(samples: samples, sampleRate: sampleRate)
         // Wider than `onsetTolerance` — purely for labeling a clean miss as
         // "early"/"late" when there's a plausible nearby onset to blame it
         // on, versus "missed" when there's genuinely nothing around. Scales
         // with a widened tolerance so it stays meaningfully wider than it,
-        // rather than nearly coinciding with it at the high end.
-        let nearbyRadius: TimeInterval = max(0.5, onsetTolerance * 3)
+        // rather than nearly coinciding with it at the high end — but
+        // capped at 1s regardless, so the *label* doesn't get absurdly
+        // generous at the top of the tolerance slider's range (1.2s,
+        // uncapped, at the 0.4s max).
+        let nearbyRadius: TimeInterval = min(max(0.5, onsetTolerance * 3), 1.0)
+
+        // Every distinct onset time in the full piece — chord notes share
+        // one value here on purpose (see `cappedOnsetTolerance`, they
+        // shouldn't restrict each other).
+        let distinctStartTimes = Array(Set((fullSequence ?? sequence).notes.map(\.startTime))).sorted()
 
         let perNote: [NoteEvaluation] = sequence.notes.map { note in
             let relativeStart = note.startTime - regionStart
+            let effectiveOnsetTolerance = cappedOnsetTolerance(
+                for: note.startTime,
+                distinctStartTimes: distinctStartTimes,
+                requested: onsetTolerance
+            )
             // The *closest* onset within tolerance, not the first one in
             // time order — with a wide tolerance and closely-spaced notes
             // (a fast run is the common case, which on a guitar tends to
@@ -142,8 +164,12 @@ public enum PerformanceEvaluator {
             // sample the *wrong* note's onset — explaining reports of
             // widening the tolerance sometimes making pickup *worse*
             // rather than better, exactly for these fast/close passages.
+            // `effectiveOnsetTolerance` (rather than the raw requested
+            // one) additionally guarantees this note's own window can
+            // never reach far enough to touch a neighbor's onset in the
+            // first place, regardless of how wide the user's setting is.
             let matchingOnset = onsets
-                .filter { abs($0 - relativeStart) <= onsetTolerance }
+                .filter { abs($0 - relativeStart) <= effectiveOnsetTolerance }
                 .min(by: { abs($0 - relativeStart) < abs($1 - relativeStart) })
             let checkTime = matchingOnset ?? relativeStart
             let frequencyCheck = matchingOnset != nil
@@ -180,6 +206,30 @@ public enum PerformanceEvaluator {
             )
         }
         return Result(perNote: perNote)
+    }
+
+    /// Shrinks `requested` to at most half the gap to this note's nearest
+    /// *other* onset time in the piece, so two nearby notes' matching
+    /// windows can never overlap — one note stealing the onset that
+    /// actually belongs to its neighbor is exactly what let a wide
+    /// `onsetTolerance` make scoring *worse* on a fast run rather than
+    /// better (see `evaluate`'s doc). Notes that share `startTime` (a
+    /// chord) don't count as neighbors of each other here — they're
+    /// expected to land on the very same onset, not compete for it — so
+    /// this only ever looks at *distinct* start times, never at
+    /// `requested` itself when there's no other distinct time nearby
+    /// (an isolated note, or the only chord in the piece).
+    private static func cappedOnsetTolerance(for startTime: TimeInterval, distinctStartTimes: [TimeInterval], requested: TimeInterval) -> TimeInterval {
+        guard let index = distinctStartTimes.firstIndex(of: startTime) else { return requested }
+        var nearestGap = TimeInterval.infinity
+        if index > 0 {
+            nearestGap = min(nearestGap, startTime - distinctStartTimes[index - 1])
+        }
+        if index < distinctStartTimes.count - 1 {
+            nearestGap = min(nearestGap, distinctStartTimes[index + 1] - startTime)
+        }
+        guard nearestGap.isFinite else { return requested }
+        return min(requested, nearestGap / 2)
     }
 
     public static func frequency(forMIDIPitch pitch: Int) -> Double {

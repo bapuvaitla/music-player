@@ -200,11 +200,18 @@ struct RecordEvaluateControl: View {
                             .font(.caption2)
                             .foregroundStyle(.secondary)
                         HStack(spacing: 8) {
-                            // Capped at 50 (half a semitone) — past that,
-                            // the window starts to overlap a neighboring
-                            // note's own territory rather than just
-                            // accommodating tuning drift.
-                            Slider(value: $pitchTolerance, in: 10...50, step: 1)
+                            // The known collision this guards against
+                            // (`peakMagnitude`'s doc: E2's 2nd harmonic vs
+                            // D#3's fundamental) sits a full semitone (100
+                            // cents) away, so even the old 50-cent max had
+                            // a real 2x margin, not a razor's edge. Trimmed
+                            // to 40 anyway as a little more headroom — a
+                            // physical string's harmonics aren't perfectly
+                            // integer multiples of its fundamental the way
+                            // this model assumes, so a real instrument can
+                            // land a bit closer to that gap than the ideal
+                            // math suggests.
+                            Slider(value: $pitchTolerance, in: 10...40, step: 1)
                                 .frame(width: 140)
                             Text("\(Int(pitchTolerance.rounded()))¢")
                                 .font(.caption)
@@ -356,7 +363,14 @@ struct RecordEvaluateControl: View {
             isVocal: isVocal,
             regionStart: regionStart - captureLeadTime,
             onsetTolerance: onsetTolerance,
-            pitchTolerance: pitchTolerance
+            pitchTolerance: pitchTolerance,
+            // `settledNotes` is only a slice of the take, scored a few
+            // notes at a time as each one settles — passing the take's
+            // *whole* note set here lets `evaluate` see a settled note's
+            // real neighbors (including ones already scored in an earlier
+            // call) so it can still cap that note's own onset-matching
+            // window near them.
+            fullSequence: NoteSequence(notes: notesInRegion)
         )
         evaluatedNotes.formUnion(settledNotes)
         withAnimation(.spring(response: 0.3, dampingFraction: 0.6)) {
@@ -400,7 +414,12 @@ struct RecordEvaluateControl: View {
             isVocal: isVocal,
             regionStart: regionStart - captureLeadTime,
             onsetTolerance: onsetTolerance,
-            pitchTolerance: pitchTolerance
+            pitchTolerance: pitchTolerance,
+            // See the identical note in `evaluateSettledNotes` — this is
+            // only the leftover tail of the take, but a leftover note's
+            // real neighbors may already have been scored in an earlier
+            // call.
+            fullSequence: NoteSequence(notes: notesInRegion)
         )
         // Springs the hit/miss markers' colors in on the score view
         // (bound via `result`) instead of a hard instant swap.
