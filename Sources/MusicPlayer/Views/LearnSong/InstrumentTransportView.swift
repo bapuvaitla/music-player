@@ -161,8 +161,14 @@ struct InstrumentTransportView: View {
             Button {
                 showingTransposePopover = true
             } label: {
+                // Fixed-size frame, matching the tuner/sync-offset icons
+                // either side of it — a plain-text glyph at the same
+                // point size as an SF Symbol tends to read smaller, so
+                // this also needs a larger size to actually look the same
+                // weight as its neighbors, not just the same frame.
                 Text("♯/♭")
-                    .font(.system(size: 13, weight: .semibold))
+                    .font(.system(size: 17, weight: .semibold))
+                    .frame(width: 20, height: 20)
             }
             .buttonStyle(.plain)
             .foregroundStyle(engine.transposition != 0 ? Color.primary : Color.secondary)
@@ -191,6 +197,7 @@ struct InstrumentTransportView: View {
                 } label: {
                     Image(systemName: "tuningfork")
                         .font(.system(size: 16))
+                        .frame(width: 20, height: 20)
                 }
                 .buttonStyle(.plain)
                 .foregroundStyle(.secondary)

@@ -40,23 +40,26 @@ struct RegionSelectIcon: View {
     var body: some View {
         // The connecting line used to have no explicit width, so as a
         // Shape with no intrinsic size it stretched to fill however much
-        // space its parent offered — up to the full 28pt button box, with
-        // no margin at all, which is what made this icon visually larger
-        // than the loop button's fixed-size SF Symbol. Giving every piece
-        // an explicit size makes the whole icon a fixed 16×13 that centers
-        // (with real margin) inside the button, the same as the symbol
-        // does.
+        // space its parent offered, with no margin at all. Every piece is
+        // now a whole-number size (3/8/3 wide, 12 tall) that sums to
+        // exactly the icon's own 14×12 frame — and 14/12 both divide the
+        // outer 28×22 button evenly on each side (7pt and 5pt). The
+        // previous 16×13 icon left a fractional 4.5pt vertical margin,
+        // which rendered as a soft half-pixel offset — the two bars
+        // technically the same width, but one landing on a slightly
+        // different sub-pixel boundary than the other, so it read as
+        // thinner/cut off.
         HStack(spacing: 0) {
             RoundedRectangle(cornerRadius: 1, style: .continuous)
                 .fill(color)
-                .frame(width: 2.5, height: 13)
+                .frame(width: 3, height: 12)
             Rectangle()
                 .fill(color)
-                .frame(width: 9, height: 2)
+                .frame(width: 8, height: 2)
             RoundedRectangle(cornerRadius: 1, style: .continuous)
                 .fill(color)
-                .frame(width: 2.5, height: 13)
+                .frame(width: 3, height: 12)
         }
-        .frame(width: 16, height: 13)
+        .frame(width: 14, height: 12)
     }
 }

@@ -15,8 +15,14 @@ struct BPMIndicator: View {
 
     var body: some View {
         HStack(spacing: 5) {
+            // Fixed-size frame, not just a font size — matches the other
+            // icons in this row (transposition, tuner, sync offset), each
+            // pinned to the same 20×20 box so they read as a consistent
+            // set and vertically center on the same line regardless of
+            // each glyph's own natural bounding box.
             Image(systemName: "metronome")
-                .font(.system(size: 13))
+                .font(.system(size: 16))
+                .frame(width: 20, height: 20)
             Text("\(effectiveBPM) BPM")
                 .font(.system(size: 13))
                 .monospacedDigit()

@@ -15,8 +15,13 @@ struct SyncOffsetButton: View {
         Button {
             showingPopover = true
         } label: {
+            // Matches the tuner/transposition/BPM icons either side of
+            // this one — same 20×20 frame, same 16pt glyph size, so the
+            // row of icons reads as one consistent set instead of each
+            // being a slightly different size.
             Image(systemName: "timer")
-                .font(.system(size: 15))
+                .font(.system(size: 16))
+                .frame(width: 20, height: 20)
         }
         .buttonStyle(.plain)
         .foregroundStyle(syncOffsetMs == 0 ? Color.secondary : Color.primary)
