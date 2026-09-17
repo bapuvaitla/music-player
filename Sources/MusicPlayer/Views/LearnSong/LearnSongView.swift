@@ -252,14 +252,26 @@ struct LearnSongView: View {
     /// set here, so this also has to run once at launch, same as
     /// `applySyncOffsetToEngines`.
     private func applyLoopRegionToEngines() {
-        tabEngine.loopRegion = selectedRegion
+        tabEngine.loopRegion = effectiveLoopRegion(duration: tabSequence?.duration ?? 0)
         tabEngine.loopsRegion = isLoopEnabled
-        vocalEngine.loopRegion = selectedRegion
+        vocalEngine.loopRegion = effectiveLoopRegion(duration: vocalSequence?.duration ?? 0)
         vocalEngine.loopsRegion = isLoopEnabled
-        notationEngine.loopRegion = selectedRegion
+        notationEngine.loopRegion = effectiveLoopRegion(duration: notationSequence?.duration ?? 0)
         notationEngine.loopsRegion = isLoopEnabled
-        fullScoreEngine.loopRegion = selectedRegion
+        fullScoreEngine.loopRegion = effectiveLoopRegion(duration: fullScoreEngine.duration)
         fullScoreEngine.loopsRegion = isLoopEnabled
+    }
+
+    /// With no region selected but looping on, the *whole* sequence loops
+    /// — so an engine still needs a concrete range, not `nil`, to actually
+    /// repeat anything (see `NotePlaybackEngine.loopRegion`'s own
+    /// end-of-region check, which does nothing when it's `nil`). Each
+    /// engine gets its *own* duration here rather than one shared value —
+    /// the tab/vocal/notation sequences and the full score aren't
+    /// guaranteed to all run the same length.
+    private func effectiveLoopRegion(duration: TimeInterval) -> ClosedRange<TimeInterval>? {
+        if let selectedRegion { return selectedRegion }
+        return isLoopEnabled ? 0...duration : nil
     }
 
     private func prewarmCurrentRecorder() {

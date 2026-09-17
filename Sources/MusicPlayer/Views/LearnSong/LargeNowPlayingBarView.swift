@@ -2,10 +2,10 @@ import SwiftUI
 import MusicPlayerKit
 
 /// The song's own transport in Learn Song mode, with one addition: a loop
-/// region. Drag the two handles on the scrub bar to select a section —
-/// that's always available, whether or not looping is on. Toggle looping
-/// to repeat it, or leave it off to just play through that section once;
-/// the "x" button clears back to the full song. Reuses the same
+/// region. Two independent toggles — region-select and loop — give four
+/// states: neither on (plays the full song, once); region on, loop off
+/// (plays just that section, once); both on (loops just that section);
+/// region off, loop on (loops the entire song). Reuses the same
 /// `PlayerController`/`PlaybackCoordinator` as the rest of the app — the
 /// song doesn't need to stay in sync with the tab/vocal playback, so
 /// there's no separate player instance here.
@@ -24,6 +24,10 @@ struct LargeNowPlayingBarView: View {
     @Binding var selectedRegion: ClosedRange<TimeInterval>?
     @Binding var isLoopEnabled: Bool
 
+    /// Mirrors `selectedRegion != nil` — see `PlaybackLoopControl.regionSelected`
+    /// for why this is its own piece of local state rather than computed
+    /// inline.
+    @State private var regionSelected: Bool
     @State private var loopEnabled: Bool
     @State private var loopStart: TimeInterval
     @State private var loopEnd: TimeInterval
@@ -43,6 +47,7 @@ struct LargeNowPlayingBarView: View {
         self._selectedRegion = selectedRegion
         self._isLoopEnabled = isLoopEnabled
         let initial = selectedRegion.wrappedValue
+        _regionSelected = State(initialValue: initial != nil)
         _loopEnabled = State(initialValue: isLoopEnabled.wrappedValue)
         _loopStart = State(initialValue: initial?.lowerBound ?? 0)
         _loopEnd = State(initialValue: initial?.upperBound ?? 10)
@@ -104,49 +109,28 @@ struct LargeNowPlayingBarView: View {
                 Spacer()
             }
 
-            // The loop toggle, reset, and the scrub bar it applies to all
-            // live in one row — they used to be split across two rows
-            // (toggle/reset up top, scrub bar below) with two different
-            // gaps, which made the "these go together" grouping hard to
-            // read. The toggle and reset are a tight pair (8pt); there's
-            // extra room (16pt) before the time label/scrub bar/time label
-            // cluster, matching `PlaybackLoopControl`'s layout.
+            // The two toggles and the scrub bar they apply to all live in
+            // one row — they used to be split across two rows (toggle/
+            // reset up top, scrub bar below) with two different gaps,
+            // which made the "these go together" grouping hard to read.
+            // The toggles are a tight pair (8pt); there's extra room
+            // (16pt) before the time label/scrub bar/time label cluster,
+            // matching `PlaybackLoopControl`'s layout.
             HStack(spacing: 16) {
                 HStack(spacing: 8) {
-                    // "Select a section [of the song] to loop" — sized up
-                    // to match the rest of this bar's new prominence. Drag
-                    // either handle below to select/adjust a region
-                    // regardless of whether this is on; it just controls
-                    // whether it repeats. Filled solid green when on,
-                    // plain gray glyph with no fill when off — a flat tint
-                    // (as a system `Toggle` rendered it) read as "on" even
-                    // at rest, so the two states need to look nothing
-                    // alike rather than just a shade apart.
-                    Button {
+                    LoopControlToggle(isActive: regionSelected, help: "Select a region") {
+                        regionSelected.toggle()
+                    } icon: { color in
+                        RegionSelectIcon(color: color)
+                    }
+
+                    LoopControlToggle(isActive: loopEnabled, help: "Loop") {
                         loopEnabled.toggle()
-                    } label: {
+                    } icon: { color in
                         Image(systemName: "repeat")
                             .font(.system(size: 15, weight: .semibold))
-                            .foregroundStyle(loopEnabled ? Color.white : Color.secondary)
-                            .frame(width: 28, height: 22)
-                            .background(
-                                RoundedRectangle(cornerRadius: 6, style: .continuous)
-                                    .fill(loopEnabled ? Color.green : Color.clear)
-                            )
+                            .foregroundStyle(color)
                     }
-                    .buttonStyle(.plain)
-                    .help("Loop the selected region")
-
-                    Button {
-                        reset()
-                    } label: {
-                        Image(systemName: "xmark.circle")
-                            .font(.system(size: 14))
-                    }
-                    .buttonStyle(.plain)
-                    .foregroundStyle(.secondary)
-                    .disabled(selectedRegion == nil)
-                    .help("Reset to the full song")
                 }
 
                 Text(timeString(player.currentTime))
@@ -155,7 +139,7 @@ struct LargeNowPlayingBarView: View {
 
                 LoopScrubBar(
                     loopEnabled: loopEnabled,
-                    isRegionSelected: selectedRegion != nil,
+                    isRegionSelected: regionSelected,
                     loopStart: $loopStart,
                     loopEnd: $loopEnd,
                     duration: max(player.duration, loopEnd),
@@ -176,58 +160,54 @@ struct LargeNowPlayingBarView: View {
         // enough to earn real presence, not just a quiet footnote.
         .background(Color.panelBackground)
         .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .onChange(of: regionSelected) { _, newValue in
+            // A fresh default span every time selection turns on, rather
+            // than resuming wherever the handles last were.
+            if newValue {
+                loopStart = 0
+                loopEnd = min(player.duration, 10)
+            }
+            applyLoopRegion()
+        }
         .onChange(of: loopEnabled) { _, _ in applyLoopRegion() }
         .onChange(of: loopStart) { _, _ in applyLoopRegion() }
         .onChange(of: loopEnd) { _, _ in applyLoopRegion() }
         .onChange(of: selectedRegion) { _, newValue in
             guard newValue != lastWrittenRegion else { return }
             lastWrittenRegion = newValue
+            regionSelected = newValue != nil
             if let newValue {
                 loopStart = newValue.lowerBound
                 loopEnd = newValue.upperBound
             }
-            if isThisTrackCurrent { player.loopRegion = newValue }
+            syncPlayerLoop()
         }
         .onChange(of: isLoopEnabled) { _, newValue in
             guard newValue != lastWrittenIsLoopEnabled else { return }
             lastWrittenIsLoopEnabled = newValue
             loopEnabled = newValue
-            if isThisTrackCurrent { player.loopsRegion = newValue }
+            syncPlayerLoop()
         }
     }
 
     private func applyLoopRegion() {
-        // Always updates the region regardless of `loopEnabled` — a
-        // region can be selected (and used to scope Play Along/Sing
-        // Along, or just to mark a section of the song) without looping
-        // it. Only `isLoopEnabled` controls whether anything repeats.
-        let region = loopEnd > loopStart ? loopStart...loopEnd : nil
+        let region = regionSelected ? loopStart...loopEnd : nil
         lastWrittenRegion = region
         selectedRegion = region
         lastWrittenIsLoopEnabled = loopEnabled
         isLoopEnabled = loopEnabled
-        if isThisTrackCurrent {
-            player.loopRegion = region
-            player.loopsRegion = loopEnabled
-        }
+        syncPlayerLoop()
     }
 
-    /// Clears the shared region/toggle back to "no region, whole song" —
-    /// and resets the local handle positions back to a default span, so
-    /// the next drag starts fresh instead of resuming from wherever they
-    /// last were.
-    private func reset() {
-        loopEnabled = false
-        loopStart = 0
-        loopEnd = min(player.duration, 10)
-        lastWrittenRegion = nil
-        selectedRegion = nil
-        lastWrittenIsLoopEnabled = false
-        isLoopEnabled = false
-        if isThisTrackCurrent {
-            player.loopRegion = nil
-            player.loopsRegion = false
-        }
+    /// With no region selected but looping on, the *whole song* loops —
+    /// so the engine still needs a concrete range, not `nil`. Centralized
+    /// here since three different places (a region/loop toggle changing
+    /// locally, or either one changing from outside via `selectedRegion`/
+    /// `isLoopEnabled`) all need to recompute the same thing.
+    private func syncPlayerLoop() {
+        guard isThisTrackCurrent else { return }
+        player.loopRegion = regionSelected ? loopStart...loopEnd : (loopEnabled ? 0...player.duration : nil)
+        player.loopsRegion = loopEnabled
     }
 
     private func timeString(_ time: TimeInterval) -> String {

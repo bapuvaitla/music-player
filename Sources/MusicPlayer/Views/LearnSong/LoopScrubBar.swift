@@ -1,10 +1,12 @@
 import SwiftUI
 
 /// A scrub bar with two draggable handles marking a region, drawn as a
-/// highlighted band between them — always visible and draggable regardless
-/// of `isRegionSelected`/`loopEnabled` (those only recolor the band/
-/// handles: plain gray with nothing selected, green once a region is
-/// selected, bold green once it also loops).
+/// highlighted band between them. The band/handles only appear at all when
+/// `isRegionSelected` is on (entering/leaving that state is a separate
+/// button — see `LoopControlToggle`/`RegionSelectIcon`); while shown,
+/// `loopEnabled` colors them green (selected) or bold green (also loops).
+/// With nothing selected, this is just the plain background track and the
+/// playhead circle.
 /// Used by the song's transport (`LargeNowPlayingBarView`) and each
 /// practice pane/full score (`PlaybackLoopControl`) alike — all of them
 /// read and write the same one shared region (see
@@ -72,30 +74,29 @@ struct LoopScrubBar: View {
                     }
                 }
 
-                // The band and handles are always shown, regardless of
-                // `loopEnabled` — this is the only way to actually drag a
-                // region in the first place, so gating it behind the loop
-                // toggle (as this used to do) meant there was no way to
-                // select a region at all without first turning looping
-                // on. Three visually distinct states instead of just two:
-                // plain gray with nothing selected, green once a region is
-                // actually selected, and bold green (heavier + a glow)
-                // once that selection also loops — so "will this repeat"
-                // still reads at a glance, on top of "is anything selected
-                // at all."
-                let startX = width * CGFloat(loopStart / safeDuration)
-                let endX = width * CGFloat(loopEnd / safeDuration)
-                Capsule()
-                    .fill(bandColor)
-                    .frame(width: max(2, endX - startX), height: loopEnabled ? 9 : 6)
-                    .shadow(color: loopEnabled ? Color.green.opacity(0.45) : .clear, radius: 3)
-                    .offset(x: startX)
+                // The band and handles only appear once `isRegionSelected`
+                // is on — a separate button (see `LoopControlToggle`) now
+                // owns entering/leaving region-selection, so there's no
+                // ambiguity about how to "start" it the way there was when
+                // this always rendered a draggable-looking band regardless
+                // of whether anything was actually selected. Two remaining
+                // visual tiers once it is on: green for "selected", bold
+                // green (heavier + a glow) once that selection also loops.
+                if isRegionSelected {
+                    let startX = width * CGFloat(loopStart / safeDuration)
+                    let endX = width * CGFloat(loopEnd / safeDuration)
+                    Capsule()
+                        .fill(bandColor)
+                        .frame(width: max(2, endX - startX), height: loopEnabled ? 9 : 6)
+                        .shadow(color: loopEnabled ? Color.green.opacity(0.45) : .clear, radius: 3)
+                        .offset(x: startX)
 
-                handle(time: loopStart, width: width, duration: safeDuration) { newTime in
-                    loopStart = min(newTime, loopEnd - 0.5)
-                }
-                handle(time: loopEnd, width: width, duration: safeDuration) { newTime in
-                    loopEnd = max(newTime, loopStart + 0.5)
+                    handle(time: loopStart, width: width, duration: safeDuration) { newTime in
+                        loopStart = min(newTime, loopEnd - 0.5)
+                    }
+                    handle(time: loopEnd, width: width, duration: safeDuration) { newTime in
+                        loopEnd = max(newTime, loopStart + 0.5)
+                    }
                 }
 
                 // Drawn last (on top of the band/handles) with a white
@@ -132,23 +133,15 @@ struct LoopScrubBar: View {
         return max(1, Int((minLabelSpacing / max(pixelsPerBar, 1)).rounded(.up)))
     }
 
-    /// Plain gray with no selection at all, green once a region is
-    /// actually selected, bold (fully-opaque, glowing) green once that
-    /// selection also loops.
+    /// Only ever consulted while `isRegionSelected` is on (see `body` —
+    /// the band/handles aren't drawn at all otherwise): green for a plain
+    /// selection, bold (fully-opaque, glowing) green once it also loops.
     private var bandColor: Color {
-        if loopEnabled { return Color.green }
-        if isRegionSelected { return Color.green.opacity(0.6) }
-        return Color.secondary.opacity(0.15)
+        loopEnabled ? Color.green : Color.green.opacity(0.6)
     }
 
-    /// Same three tiers as `bandColor`, but never as faint as the band's
-    /// own resting gray — a handle still needs to read as "grab me" even
-    /// with nothing selected, whereas the band itself is fine sitting
-    /// nearly invisible at rest.
     private var handleColor: Color {
-        if loopEnabled { return Color.green }
-        if isRegionSelected { return Color.green.opacity(0.75) }
-        return Color.secondary.opacity(0.45)
+        loopEnabled ? Color.green : Color.green.opacity(0.75)
     }
 
     private func handle(
@@ -158,10 +151,10 @@ struct LoopScrubBar: View {
         onChange: @escaping (TimeInterval) -> Void
     ) -> some View {
         let x = width * CGFloat(time / duration)
-        let size: CGFloat = loopEnabled ? 10 : (isRegionSelected ? 9 : 8)
+        let size: CGFloat = loopEnabled ? 10 : 9
         return RoundedRectangle(cornerRadius: 3, style: .continuous)
             .fill(handleColor)
-            .frame(width: size, height: size == 8 ? 20 : (size == 9 ? 22 : 24))
+            .frame(width: size, height: loopEnabled ? 24 : 22)
             .shadow(color: loopEnabled ? Color.green.opacity(0.5) : .clear, radius: 2)
             .offset(x: x - size / 2)
             .gesture(

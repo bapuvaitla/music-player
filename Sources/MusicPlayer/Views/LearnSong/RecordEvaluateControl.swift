@@ -24,7 +24,9 @@ struct RecordEvaluateControl: View {
     /// this and `selectedRegion` together). When on, reaching the end of
     /// `selectedRegion` during a take doesn't stop it — a fresh take
     /// starts right back up at `regionStart` automatically, over and
-    /// over, until "Stop" is pressed. Each lap is a genuinely new,
+    /// over, until "Stop" is pressed. With no region selected, `regionStart`/
+    /// `regionEnd` span the whole sequence, so this loops entire takes of
+    /// the full song instead. Each lap is a genuinely new,
     /// independently-scored take (see the `liveEvaluationTimer` closure
     /// below), not one long recording spanning every lap — simpler, and
     /// it keeps a very long drill session from growing one unbounded
@@ -236,7 +238,20 @@ struct RecordEvaluateControl: View {
         }
         .onChange(of: engine.isPlaying) { _, isPlaying in
             guard isRecordingSession, !isCountingIn, !isPlaying else { return }
+            // This is playback reaching the *natural* end of the whole
+            // sequence on its own (the path below only matters when a
+            // narrower region needs to stop early) — with no region
+            // selected, that also means "reached the end of a lap," so a
+            // loop-enabled take needs to restart here too, the same as the
+            // narrower-region case below does. Pressing "Stop" by hand
+            // can't double up with this: `finishRecording()` clears
+            // `isRecordingSession` before it pauses the engine, so the
+            // guard above already excludes that path.
+            let shouldLoop = selectedRegion == nil && isLoopEnabled
             finishRecording()
+            if shouldLoop {
+                startRecording()
+            }
         }
     }
 
@@ -289,14 +304,15 @@ struct RecordEvaluateControl: View {
         // own timers; this one had been missed.
         let newTimer = Timer(timeInterval: 0.3, repeats: true) { _ in
             Task { @MainActor in
-                // With no loop selected, `regionEnd` is the whole
+                // With no region selected, `regionEnd` is the whole
                 // sequence's own duration and `engine` already stops
-                // itself there (see the `engine.isPlaying` handler below)
-                // — this only fires early when a loop selection is
+                // itself there (see the `engine.isPlaying` handler above,
+                // which now also restarts a loop-enabled take in that
+                // case) — this only fires early when a selected region is
                 // actually narrower than the full sequence, so "Play
                 // Along" stops (and scores) right at the end of the
-                // selected loop instead of playing on through the rest of
-                // the song.
+                // selected region instead of playing on through the rest
+                // of the song.
                 if selectedRegion != nil, engine.currentTime >= regionEnd {
                     let shouldLoop = isLoopEnabled
                     finishRecording()
