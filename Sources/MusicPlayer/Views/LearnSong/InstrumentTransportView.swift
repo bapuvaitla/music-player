@@ -161,14 +161,18 @@ struct InstrumentTransportView: View {
             Button {
                 showingTransposePopover = true
             } label: {
-                // Fixed-size frame, matching the tuner/sync-offset icons
-                // either side of it — a plain-text glyph at the same
-                // point size as an SF Symbol tends to read smaller, so
-                // this also needs a larger size to actually look the same
-                // weight as its neighbors, not just the same frame.
+                // Height-only frame, matching the tuner/sync-offset icons
+                // either side of it for vertical alignment — a fixed
+                // *width* of 20 truncated "♯/♭" to an ellipsis, since
+                // three characters at 17pt semibold don't fit in a square
+                // the SF Symbols either side of it are happy with. Letting
+                // the width size to the text avoids that; a plain-text
+                // glyph at the same point size as an SF Symbol also tends
+                // to read smaller, hence the larger size to actually match
+                // its neighbors' weight.
                 Text("♯/♭")
                     .font(.system(size: 17, weight: .semibold))
-                    .frame(width: 20, height: 20)
+                    .frame(height: 20)
             }
             .buttonStyle(.plain)
             .foregroundStyle(engine.transposition != 0 ? Color.primary : Color.secondary)
