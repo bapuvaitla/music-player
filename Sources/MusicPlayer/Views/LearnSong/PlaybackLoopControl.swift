@@ -94,12 +94,8 @@ struct PlaybackLoopControl: View {
     }
 
     var body: some View {
-        // The two toggles are a tight pair (8pt) — they're the same kind
-        // of control, read together — but there's extra room (16pt)
-        // before the scrub bar itself, which they don't sit directly on
-        // top of.
-        HStack(spacing: 16) {
-            HStack(spacing: 8) {
+        HStack(spacing: 24) {
+            HStack(spacing: 14) {
                 LoopControlToggle(isActive: regionSelected, help: "Select a region") {
                     regionSelected.toggle()
                 } icon: { color in

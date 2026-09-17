@@ -113,11 +113,9 @@ struct LargeNowPlayingBarView: View {
             // one row — they used to be split across two rows (toggle/
             // reset up top, scrub bar below) with two different gaps,
             // which made the "these go together" grouping hard to read.
-            // The toggles are a tight pair (8pt); there's extra room
-            // (16pt) before the time label/scrub bar/time label cluster,
-            // matching `PlaybackLoopControl`'s layout.
-            HStack(spacing: 16) {
-                HStack(spacing: 8) {
+            // Matches `PlaybackLoopControl`'s spacing.
+            HStack(spacing: 24) {
+                HStack(spacing: 14) {
                     LoopControlToggle(isActive: regionSelected, help: "Select a region") {
                         regionSelected.toggle()
                     } icon: { color in

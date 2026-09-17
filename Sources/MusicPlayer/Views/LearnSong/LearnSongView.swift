@@ -374,9 +374,13 @@ struct LearnSongView: View {
     private func loadSavedSession() {
         Task {
             guard let saved = await library.loadLearnSession(for: track) else { return }
-            if let start = saved.loopStart, let end = saved.loopEnd, end > start {
-                selectedRegion = start...end
-            }
+            // `loopStart`/`loopEnd` are still persisted (see
+            // `saveLearnSession` below) but deliberately not restored here
+            // — the region-select toggle should always start off when
+            // Learn Song opens, not silently reactivate whatever section
+            // happened to be selected last time. `isLoopEnabled` alone is
+            // still worth restoring: with no region selected, on just
+            // means "loop the whole song," a preference worth keeping.
             isLoopEnabled = saved.isLoopEnabled
             if let tabPath = saved.tabFilePath {
                 importFile(at: URL(fileURLWithPath: tabPath), kind: .tab, persist: false)
